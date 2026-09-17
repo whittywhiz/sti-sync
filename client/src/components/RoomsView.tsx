@@ -25,8 +25,23 @@ interface RoomFormProps {
 
 function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
   const [roomNumber, setRoomNumber] = useState(initial.room_number);
-  const [capacity, setCapacity] = useState(initial.capacity);
+  const [capacity, setCapacity] = useState(String(initial.capacity));
   const [type, setType] = useState(initial.type);
+  const [error, setError] = useState("");
+
+  const handleSave = () => {
+    if (!roomNumber.trim()) {
+      setError("Room number is required.");
+      return;
+    }
+    const capNum = Number(capacity);
+    if (!capacity.trim() || capNum <= 0) {
+      setError("Capacity must not be 0.");
+      return;
+    }
+    setError("");
+    onSave({ room_number: roomNumber, capacity: capNum, type });
+  };
 
   return (
     <div className="space-y-4">
@@ -35,12 +50,18 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
           placeholder="Room Number (e.g. 301)"
           value={roomNumber}
           onChange={(e) => setRoomNumber(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSave();
+          }}
         />
         <Input
           type="number"
           placeholder="Capacity"
           value={capacity}
-          onChange={(e) => setCapacity(+e.target.value)}
+          onChange={(e) => setCapacity(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleSave();
+          }}
         />
         <select
           value={type}
@@ -51,11 +72,9 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
           <option value="Laboratory">Laboratory</option>
         </select>
       </div>
+      {error && <p className="text-xs text-destructive">{error}</p>}
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          onClick={() => onSave({ room_number: roomNumber, capacity, type })}
-        >
+        <Button size="sm" onClick={handleSave}>
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel}>
@@ -65,7 +84,6 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
     </div>
   );
 }
-
 export function RoomsView() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);

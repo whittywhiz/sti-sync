@@ -33,6 +33,9 @@ function ProgForm({ initialDescription, onSave, onCancel }: ProgFormProps) {
         placeholder="Program name (e.g. BS Information Technology)"
         value={description}
         onChange={(e) => setDescription(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") onSave(description);
+        }}
       />
       <div className="flex gap-2">
         <Button size="sm" onClick={() => onSave(description)}>

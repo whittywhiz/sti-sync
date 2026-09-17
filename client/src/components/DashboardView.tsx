@@ -317,32 +317,34 @@ export function DashboardView() {
             </p>
           ) : (
             <div className="border border-border/40 rounded-lg overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs">Time Duration</TableHead>
-                    <TableHead className="text-xs">Name</TableHead>
-                    <TableHead className="text-xs">Department</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {availableProfessors.map(({ e, slot }) => (
-                    <TableRow key={e.employee_id}>
-                      <TableCell className="text-xs font-medium">
-                        {slot
-                          ? `${formatHour12(timeToHourFloat(slot.start_time))} - ${formatHour12(timeToHourFloat(slot.end_time))}`
-                          : "—"}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {employeeDisplayName(e)}
-                      </TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {e.department ?? "—"}
-                      </TableCell>
+              <div className="max-h-64 overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">Time Duration</TableHead>
+                      <TableHead className="text-xs">Name</TableHead>
+                      <TableHead className="text-xs">Department</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {availableProfessors.map(({ e, slot }) => (
+                      <TableRow key={e.employee_id}>
+                        <TableCell className="text-xs font-medium">
+                          {slot
+                            ? `${formatHour12(timeToHourFloat(slot.start_time))} - ${formatHour12(timeToHourFloat(slot.end_time))}`
+                            : "—"}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {employeeDisplayName(e)}
+                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {e.department ?? "—"}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           )}
         </motion.div>
@@ -372,28 +374,30 @@ export function DashboardView() {
             </p>
           ) : (
             <div className="border border-border/40 rounded-lg overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="text-xs">Room</TableHead>
-                    <TableHead className="text-xs">Capacity</TableHead>
-                    <TableHead className="text-xs">Type</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {vacantRooms.map((r) => (
-                    <TableRow key={r.room_id}>
-                      <TableCell className="text-xs font-medium">
-                        {r.room_number}
-                      </TableCell>
-                      <TableCell className="text-xs">{r.capacity}</TableCell>
-                      <TableCell className="text-xs text-muted-foreground">
-                        {r.type}
-                      </TableCell>
+              <div className="max-h-64 overflow-y-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs">Room</TableHead>
+                      <TableHead className="text-xs">Capacity</TableHead>
+                      <TableHead className="text-xs">Type</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {vacantRooms.map((r) => (
+                      <TableRow key={r.room_id}>
+                        <TableCell className="text-xs font-medium">
+                          {r.room_number}
+                        </TableCell>
+                        <TableCell className="text-xs">{r.capacity}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground">
+                          {r.type}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </div>
           )}
         </motion.div>

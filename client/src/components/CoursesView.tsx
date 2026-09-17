@@ -79,6 +79,7 @@ function CourseForm({
       ? initial.placements
       : [{ program_id: programs[0]?.program_id ?? 0, year_level: "1st Year" }],
   );
+  const [error, setError] = useState("");
 
   const updatePlacement = (i: number, patch: Partial<Placement>) =>
     setPlacements((ps) =>
@@ -93,7 +94,19 @@ function CourseForm({
     setPlacements((ps) => ps.filter((_, idx) => idx !== i));
 
   const handleSave = () => {
-    if (!courseTypeId) return;
+    if (!courseCode.trim()) {
+      setError("Course code is required.");
+      return;
+    }
+    if (!description.trim()) {
+      setError("Course description is required.");
+      return;
+    }
+    if (!courseTypeId) {
+      setError("Course type is required.");
+      return;
+    }
+    setError("");
     onSave({
       course_code: courseCode,
       course_description: description,
@@ -103,7 +116,13 @@ function CourseForm({
   };
 
   return (
-    <div className="space-y-4">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSave();
+      }}
+      className="space-y-4"
+    >
       <div className="grid grid-cols-2 gap-4">
         <Input
           placeholder="Course Code (e.g. CS101)"
@@ -205,15 +224,17 @@ function CourseForm({
         </div>
       </div>
 
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
       <div className="flex gap-2">
-        <Button size="sm" onClick={handleSave}>
+        <Button type="submit" size="sm">
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
           <X className="w-4 h-4 mr-1" /> Cancel
         </Button>
       </div>
-    </div>
+    </form>
   );
 }
 

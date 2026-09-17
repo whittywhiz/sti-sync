@@ -9,7 +9,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { motion, AnimatePresence } from "framer-motion";
 
 interface Section {
   section_id: number;
@@ -65,7 +64,10 @@ function SectionForm({
   const [sectionName, setSectionName] = useState(initial.section_name);
   const [programId, setProgramId] = useState<number | "">(initial.program_id);
   const [yearLevel, setYearLevel] = useState(initial.year_level);
-  const [studentCount, setStudentCount] = useState(initial.number_of_students);
+  const [studentCount, setStudentCount] = useState(
+    String(initial.number_of_students),
+  );
+  const [error, setError] = useState("");
 
   const previewCourses = useMemo(() => {
     if (!programId) return [];
@@ -75,8 +77,37 @@ function SectionForm({
     return courses.filter((c) => codes.includes(c.course_code));
   }, [programId, yearLevel, curriculums, courses]);
 
+  const handleSave = () => {
+    if (!programId) {
+      setError("Program is required.");
+      return;
+    }
+    if (!sectionName.trim()) {
+      setError("Section letter is required.");
+      return;
+    }
+    const countNum = Number(studentCount);
+    if (!studentCount.trim() || countNum <= 0) {
+      setError("Number of students must be greater than 0.");
+      return;
+    }
+    setError("");
+    onSave({
+      section_name: sectionName,
+      program_id: programId,
+      year_level: yearLevel,
+      number_of_students: countNum,
+    });
+  };
+
   return (
-    <div className="space-y-4">
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        handleSave();
+      }}
+      className="space-y-4"
+    >
       <div className="grid grid-cols-2 gap-4">
         <Select
           value={programId ? String(programId) : ""}
@@ -114,7 +145,7 @@ function SectionForm({
           type="number"
           placeholder="Number of Students"
           value={studentCount}
-          onChange={(e) => setStudentCount(+e.target.value)}
+          onChange={(e) => setStudentCount(e.target.value)}
         />
       </div>
 
@@ -143,25 +174,17 @@ function SectionForm({
         </div>
       )}
 
+      {error && <p className="text-xs text-destructive">{error}</p>}
+
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          onClick={() =>
-            onSave({
-              section_name: sectionName,
-              program_id: programId,
-              year_level: yearLevel,
-              number_of_students: studentCount,
-            })
-          }
-        >
+        <Button type="submit" size="sm">
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
           <X className="w-4 h-4 mr-1" /> Cancel
         </Button>
       </div>
-    </div>
+    </form>
   );
 }
 
@@ -297,30 +320,23 @@ export function SectionsView() {
         </Button>
       </div>
 
-      <AnimatePresence>
-        {showForm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="glass-card rounded-xl p-5"
-          >
-            <SectionForm
-              initial={{
-                section_name: "",
-                program_id: "",
-                year_level: "1st Year",
-                number_of_students: 30,
-              }}
-              programs={programs}
-              courses={courses}
-              curriculums={curriculums}
-              onSave={handleAdd}
-              onCancel={() => setShowForm(false)}
-            />
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {showForm && (
+        <div className="glass-card rounded-xl p-5">
+          <SectionForm
+            initial={{
+              section_name: "",
+              program_id: "",
+              year_level: "1st Year",
+              number_of_students: 0,
+            }}
+            programs={programs}
+            courses={courses}
+            curriculums={curriculums}
+            onSave={handleAdd}
+            onCancel={() => setShowForm(false)}
+          />
+        </div>
+      )}
 
       {loading && (
         <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
@@ -332,9 +348,8 @@ export function SectionsView() {
         {sorted.map((s) => {
           if (editingId === s.section_id) {
             return (
-              <motion.div
+              <div
                 key={s.section_id}
-                layout
                 className="glass-card rounded-xl p-4 ring-2 ring-primary/30 md:col-span-2"
               >
                 <SectionForm
@@ -350,14 +365,13 @@ export function SectionsView() {
                   onSave={handleEdit}
                   onCancel={() => setEditingId(null)}
                 />
-              </motion.div>
+              </div>
             );
           }
           const courseCount = courseCountFor(s);
           return (
-            <motion.div
+            <div
               key={s.section_id}
-              layout
               className="glass-card rounded-xl p-4 flex items-start justify-between"
             >
               <div className="min-w-0">
@@ -388,7 +402,7 @@ export function SectionsView() {
                   <Trash2 className="w-4 h-4 text-destructive" />
                 </Button>
               </div>
-            </motion.div>
+            </div>
           );
         })}
       </div>

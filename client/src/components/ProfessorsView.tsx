@@ -127,6 +127,45 @@ function ProfessorForm({
   const removeSlot = (dayId: number) =>
     setSlots((s) => s.filter((slot) => slot.day_id !== dayId));
 
+  const handleSave = () => {
+    if (!fname.trim() || !lname.trim() || !department.trim()) {
+      setSaveError("First Name, Last Name, and Department are required.");
+      return;
+    }
+
+    const dayVal = maxHoursPerDay === "" ? null : Number(maxHoursPerDay);
+    const weekVal = maxHoursPerWeek === "" ? null : Number(maxHoursPerWeek);
+
+    if (dayVal != null && (isNaN(dayVal) || dayVal < 0 || dayVal > 24)) {
+      setSaveError("Max hours/day must be between 0 and 24.");
+      return;
+    }
+    if (weekVal != null && (isNaN(weekVal) || weekVal < 0 || weekVal > 168)) {
+      setSaveError("Max hours/week must be between 0 and 168.");
+      return;
+    }
+    if (dayVal != null && weekVal != null && dayVal > weekVal) {
+      setSaveError("Max hours/day can't be greater than max hours/week.");
+      return;
+    }
+
+    setSaveError(null);
+    onSave({
+      fname,
+      mname,
+      lname,
+      department,
+      position,
+      maxHoursPerDay,
+      maxHoursPerWeek,
+      slots,
+    });
+  };
+
+  const handleEnter = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") handleSave();
+  };
+
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
@@ -134,11 +173,13 @@ function ProfessorForm({
           placeholder="Department"
           value={department}
           onChange={(e) => setDepartment(e.target.value)}
+          onKeyDown={handleEnter}
         />
         <Input
           placeholder="Position (optional)"
           value={position}
           onChange={(e) => setPosition(e.target.value)}
+          onKeyDown={handleEnter}
         />
       </div>
       <div className="grid grid-cols-3 gap-4">
@@ -146,16 +187,19 @@ function ProfessorForm({
           placeholder="First Name"
           value={fname}
           onChange={(e) => setFname(e.target.value)}
+          onKeyDown={handleEnter}
         />
         <Input
           placeholder="Middle Name (optional)"
           value={mname}
           onChange={(e) => setMname(e.target.value)}
+          onKeyDown={handleEnter}
         />
         <Input
           placeholder="Last Name"
           value={lname}
           onChange={(e) => setLname(e.target.value)}
+          onKeyDown={handleEnter}
         />
       </div>
       <div className="grid grid-cols-2 gap-4">
@@ -173,6 +217,7 @@ function ProfessorForm({
             onChange={(e) => setMaxHoursPerDay(e.target.value)}
             onKeyDown={(e) => {
               if (["e", "E", "+", "-"].includes(e.key)) e.preventDefault();
+              else handleEnter(e);
             }}
           />
         </div>
@@ -190,6 +235,7 @@ function ProfessorForm({
             onChange={(e) => setMaxHoursPerWeek(e.target.value)}
             onKeyDown={(e) => {
               if (["e", "E", "+", "-"].includes(e.key)) e.preventDefault();
+              else handleEnter(e);
             }}
           />
         </div>
@@ -256,55 +302,7 @@ function ProfessorForm({
       </div>
       {saveError && <p className="text-xs text-destructive">{saveError}</p>}
       <div className="flex gap-2">
-        <Button
-          size="sm"
-          onClick={() => {
-            if (!fname.trim() || !lname.trim() || !department.trim()) {
-              setSaveError(
-                "First Name, Last Name, and Department are required.",
-              );
-              return;
-            }
-
-            const dayVal =
-              maxHoursPerDay === "" ? null : Number(maxHoursPerDay);
-            const weekVal =
-              maxHoursPerWeek === "" ? null : Number(maxHoursPerWeek);
-
-            if (
-              dayVal != null &&
-              (isNaN(dayVal) || dayVal < 0 || dayVal > 24)
-            ) {
-              setSaveError("Max hours/day must be between 0 and 24.");
-              return;
-            }
-            if (
-              weekVal != null &&
-              (isNaN(weekVal) || weekVal < 0 || weekVal > 168)
-            ) {
-              setSaveError("Max hours/week must be between 0 and 168.");
-              return;
-            }
-            if (dayVal != null && weekVal != null && dayVal > weekVal) {
-              setSaveError(
-                "Max hours/day can't be greater than max hours/week.",
-              );
-              return;
-            }
-
-            setSaveError(null);
-            onSave({
-              fname,
-              mname,
-              lname,
-              department,
-              position,
-              maxHoursPerDay,
-              maxHoursPerWeek,
-              slots,
-            });
-          }}
-        >
+        <Button size="sm" onClick={handleSave}>
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel}>
