@@ -18,7 +18,8 @@ export async function buildSchedulingInputFromDB(
       "SELECT employee_id, department, name, max_hours_per_day, max_hours_per_week FROM employee",
     ),
     pool.query(
-      "SELECT section_id, number_of_students, year_level, program_id FROM section",
+      "SELECT section_id, number_of_students, year_level, program_id FROM section WHERE schedule_id = $1",
+      [scheduleId],
     ),
     pool.query(`
       SELECT

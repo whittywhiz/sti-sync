@@ -13,6 +13,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
+import { motion } from "framer-motion";
 
 interface ClassRow {
   class_id: number;
@@ -373,7 +374,7 @@ export function TimetableView() {
     if (!selectedEntry) return;
     setMoving(true);
     try {
-      await fetch(`/api/classes/${selectedEntry.class_id}`, {
+      const res = await fetch(`/api/classes/${selectedEntry.class_id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -387,6 +388,7 @@ export function TimetableView() {
           schedule_id: selectedEntry.schedule_id,
         }),
       });
+      if (!res.ok) throw new Error("Move failed");
       const movedClassId = selectedEntry.class_id;
       const movedCourseCode = selectedEntry.course_code;
       setSelectedEntry(null);
@@ -398,6 +400,7 @@ export function TimetableView() {
           slot.start_time,
         )}–${formatTime12hr(slot.end_time)} · ${slot.room_number}`,
         {
+          duration: 10000,
           action: {
             label: "View",
             onClick: () => goToClass(movedClassId),
@@ -669,7 +672,12 @@ export function TimetableView() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="flex items-center justify-between"
+      >
         <div>
           <h2 className="font-heading text-2xl font-bold">Timetable</h2>
           <p className="text-muted-foreground text-sm mt-0.5">
@@ -685,9 +693,14 @@ export function TimetableView() {
           <FileDown className="w-3.5 h-3.5" />
           Export PDF
         </Button>
-      </div>
+      </motion.div>
 
-      <div className="glass-card rounded-xl p-4 space-y-3">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.05 }}
+        className="glass-card rounded-xl p-4 space-y-3"
+      >
         <div className="flex items-center gap-2 mb-1">
           <Filter className="w-4 h-4 text-muted-foreground" />
           <span className="text-sm font-semibold">Filter View</span>
@@ -743,9 +756,15 @@ export function TimetableView() {
             ))}
           </div>
         )}
-      </div>
+      </motion.div>
 
-      <div className="relative" ref={calendarWrapperRef}>
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3, delay: 0.1 }}
+        className="relative"
+        ref={calendarWrapperRef}
+      >
         <div className="glass-card rounded-xl overflow-hidden">
           <div className="overflow-x-auto">
             <div className="min-w-[960px]">
@@ -1004,7 +1023,7 @@ export function TimetableView() {
             </div>
           </div>
         )}
-      </div>
+      </motion.div>
     </div>
   );
 }

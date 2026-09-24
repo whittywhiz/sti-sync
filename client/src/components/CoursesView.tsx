@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from "react";
 import { Plus, Trash2, Pencil, Check, X, Search, BookOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
 import {
   Select,
   SelectContent,
@@ -11,28 +12,27 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
+import { ImportExcelButton } from "@/components/ImportExcelButton";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
-// Matches your real `course` table
 interface Course {
   course_code: string;
   course_description: string;
   course_type_id: number;
 }
 
-// Matches your real `course_type` table
 interface CourseType {
   course_type_id: number;
   course_type_description: string;
   total_hours: number;
 }
 
-// Matches your real `program` table
 interface Program {
   program_id: number;
   description: string;
 }
 
-// Matches your real `curriculum` table
 interface Curriculum {
   curriculum_id: number;
   year_level: string;
@@ -249,6 +249,7 @@ export function CoursesView() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [filterProgram, setFilterProgram] = useState<string>("all");
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -275,8 +276,6 @@ export function CoursesView() {
     fetchAll();
   }, []);
 
-  // Replaces all curriculum entries for a course with a new set —
-  // same "delete then insert" pattern used for professor availability.
   const saveCurriculumForCourse = async (
     courseCode: string,
     placements: Placement[],
@@ -343,10 +342,16 @@ export function CoursesView() {
 
   const removeCourse = async (code: string) => {
     try {
-      await fetch(`/api/courses/${code}`, { method: "DELETE" });
+      const res = await fetch(`/api/courses/${code}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Failed to delete course");
+        return;
+      }
       fetchAll();
     } catch (err) {
       console.error("Failed to delete course", err);
+      toast.error("Failed to delete course");
     }
   };
 
@@ -403,14 +408,17 @@ export function CoursesView() {
             Catalog of courses with curriculum placements per program.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setShowForm(!showForm);
-            setEditingId(null);
-          }}
-        >
-          <Plus className="w-4 h-4 mr-1" /> Add Course
-        </Button>
+        <div className="flex gap-2">
+          <ImportExcelButton endpoint="/api/courses/import" onDone={fetchAll} />
+          <Button
+            onClick={() => {
+              setShowForm(!showForm);
+              setEditingId(null);
+            }}
+          >
+            <Plus className="w-4 h-4 mr-1" /> Add Course
+          </Button>
+        </div>
       </div>
 
       <div className="glass-card rounded-xl p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -441,9 +449,9 @@ export function CoursesView() {
       <AnimatePresence>
         {showForm && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
             className="glass-card rounded-xl p-5"
           >
             <CourseForm
@@ -461,12 +469,6 @@ export function CoursesView() {
           </motion.div>
         )}
       </AnimatePresence>
-
-      {loading && (
-        <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          Loading courses...
-        </div>
-      )}
 
       {!loading && filtered.length === 0 ? (
         <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
@@ -488,98 +490,119 @@ export function CoursesView() {
                   </span>
                 </div>
                 <div className="space-y-2">
-                  {list.map((c) => {
-                    if (editingId === c.course_code) {
-                      const initialPlacements = placementsOfCourse(
+                  <AnimatePresence mode="popLayout">
+                    {list.map((c, index) => {
+                      if (editingId === c.course_code) {
+                        const initialPlacements = placementsOfCourse(
+                          c.course_code,
+                        ).map((cu) => ({
+                          program_id: cu.program_id,
+                          year_level: cu.year_level,
+                        }));
+                        return (
+                          <motion.div
+                            key={`${progId}-${c.course_code}-edit`}
+                            layout
+                            className="glass-card rounded-xl p-4 ring-2 ring-primary/30"
+                          >
+                            <CourseForm
+                              initial={{
+                                course_code: c.course_code,
+                                course_description: c.course_description,
+                                course_type_id: c.course_type_id,
+                                placements: initialPlacements,
+                              }}
+                              programs={programs}
+                              courseTypes={courseTypes}
+                              onSave={handleEdit}
+                              onCancel={() => setEditingId(null)}
+                            />
+                          </motion.div>
+                        );
+                      }
+                      const ct = courseTypes.find(
+                        (t) => t.course_type_id === c.course_type_id,
+                      );
+                      const placementsHere = placementsOfCourse(
                         c.course_code,
-                      ).map((cu) => ({
-                        program_id: cu.program_id,
-                        year_level: cu.year_level,
-                      }));
+                      ).filter((cu) => cu.program_id === progId);
+                      const stagger = Math.min(index, 8) * 0.05;
                       return (
                         <motion.div
-                          key={`${progId}-${c.course_code}-edit`}
+                          key={`${progId}-${c.course_code}`}
                           layout
-                          className="glass-card rounded-xl p-4 ring-2 ring-primary/30"
+                          initial={{ opacity: 0, y: 16 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{
+                            opacity: { duration: 0.3, delay: stagger },
+                            y: { duration: 0.3, delay: stagger },
+                          }}
+                          className="glass-card rounded-xl p-4 flex items-start justify-between gap-3"
                         >
-                          <CourseForm
-                            initial={{
-                              course_code: c.course_code,
-                              course_description: c.course_description,
-                              course_type_id: c.course_type_id,
-                              placements: initialPlacements,
-                            }}
-                            programs={programs}
-                            courseTypes={courseTypes}
-                            onSave={handleEdit}
-                            onCancel={() => setEditingId(null)}
-                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-mono text-sm font-semibold text-primary">
+                                {c.course_code}
+                              </span>
+                              <span
+                                className={`text-xs px-2 py-0.5 rounded-full ${ct?.course_type_description === "Laboratory" ? "bg-primary/10 text-primary" : "bg-info-light text-info"}`}
+                              >
+                                {ct?.course_type_description || "Unknown"}
+                              </span>
+                              {placementsHere.map((cu, i) => (
+                                <span
+                                  key={i}
+                                  className="text-xs px-2 py-0.5 rounded-full bg-secondary"
+                                >
+                                  {cu.year_level}
+                                </span>
+                              ))}
+                            </div>
+                            <p className="font-medium mt-1">
+                              {c.course_description}
+                            </p>
+                          </div>
+                          <div className="flex gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => {
+                                setEditingId(c.course_code);
+                                setShowForm(false);
+                              }}
+                            >
+                              <Pencil className="w-4 h-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={() => setDeleteTarget(c.course_code)}
+                            >
+                              <Trash2 className="w-4 h-4 text-destructive" />
+                            </Button>
+                          </div>
                         </motion.div>
                       );
-                    }
-                    const ct = courseTypes.find(
-                      (t) => t.course_type_id === c.course_type_id,
-                    );
-                    const placementsHere = placementsOfCourse(
-                      c.course_code,
-                    ).filter((cu) => cu.program_id === progId);
-                    return (
-                      <motion.div
-                        key={`${progId}-${c.course_code}`}
-                        layout
-                        className="glass-card rounded-xl p-4 flex items-start justify-between gap-3"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-mono text-sm font-semibold text-primary">
-                              {c.course_code}
-                            </span>
-                            <span
-                              className={`text-xs px-2 py-0.5 rounded-full ${ct?.course_type_description === "Laboratory" ? "bg-primary/10 text-primary" : "bg-info-light text-info"}`}
-                            >
-                              {ct?.course_type_description || "Unknown"}
-                            </span>
-                            {placementsHere.map((cu, i) => (
-                              <span
-                                key={i}
-                                className="text-xs px-2 py-0.5 rounded-full bg-secondary"
-                              >
-                                {cu.year_level}
-                              </span>
-                            ))}
-                          </div>
-                          <p className="font-medium mt-1">
-                            {c.course_description}
-                          </p>
-                        </div>
-                        <div className="flex gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => {
-                              setEditingId(c.course_code);
-                              setShowForm(false);
-                            }}
-                          >
-                            <Pencil className="w-4 h-4" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            onClick={() => removeCourse(c.course_code)}
-                          >
-                            <Trash2 className="w-4 h-4 text-destructive" />
-                          </Button>
-                        </div>
-                      </motion.div>
-                    );
-                  })}
+                    })}
+                  </AnimatePresence>
                 </div>
               </div>
             );
           })}
         </div>
       )}
+
+      <ConfirmDeleteDialog
+        open={deleteTarget !== null}
+        title="Delete this course?"
+        description={`Are you sure you want to delete ${deleteTarget}`}
+        onConfirm={() => {
+          if (deleteTarget) removeCourse(deleteTarget);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

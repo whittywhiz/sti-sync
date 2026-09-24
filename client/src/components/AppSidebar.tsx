@@ -12,6 +12,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useSchedulingStore } from "@/store/schedulingStore";
 import { cn } from "@/lib/utils";
+import ChangePasswordButton from "@/components/ChangePasswordButton";
 
 const navItems = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -34,23 +35,15 @@ export function AppSidebar() {
   }
 
   return (
-    <aside className="w-64 min-h-screen bg-sidebar text-sidebar-foreground flex flex-col">
-      <div className="p-6 border-b border-sidebar-border">
-        <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-sidebar-primary flex items-center justify-center">
-            <Calendar className="w-5 h-5 text-sidebar-primary-foreground" />
-          </div>
-          <div>
-            <h1 className="font-heading text-base font-bold text-sidebar-primary-foreground  text-yellow-400">
-              STI-Sync
-            </h1>
-            <p className="text-xs text-sidebar-foreground/60">
-              Scheduling System
-            </p>
-          </div>
-        </div>
+    <aside className="w-64 h-screen bg-sidebar text-sidebar-foreground flex flex-col">
+      <div className="p-6 border-b border-sidebar-border flex-shrink-0">
+        <img
+          src="/login-icon.png"
+          alt="STI-Sync"
+          className="h-14 w-auto rounded-lg"
+        />
       </div>
-      <nav className="flex-1 p-3 space-y-1">
+      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
         {navItems.map((item) => (
           <button
             key={item.id}
@@ -67,7 +60,8 @@ export function AppSidebar() {
           </button>
         ))}
       </nav>
-      <div className="p-3 border-t border-sidebar-border">
+      <div className="p-3 border-t border-sidebar-border flex-shrink-0">
+        <ChangePasswordButton />
         <button
           onClick={handleLogout}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-sidebar-foreground/70 transition-all hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"

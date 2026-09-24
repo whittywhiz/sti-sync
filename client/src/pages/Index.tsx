@@ -25,10 +25,12 @@ export default function Index() {
   const ActiveView = views[activeTab] || DashboardView;
 
   return (
-    <div className="flex min-h-screen bg-background">
+    <div className="flex h-screen overflow-hidden bg-background">
       <AppSidebar />
-      <main className="flex-1 p-8 max-w-7xl mx-auto w-full">
-        <ActiveView />
+      <main className="flex-1 overflow-y-auto">
+        <div className="max-w-[1500px] mx-auto p-8">
+          <ActiveView />
+        </div>
       </main>
     </div>
   );

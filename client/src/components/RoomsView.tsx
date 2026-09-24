@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Users, Pencil, Check, X } from "lucide-react";
+import { Plus, Trash2, Users, Pencil, Check, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 interface Room {
   room_id: number;
@@ -35,14 +36,13 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
       return;
     }
     const capNum = Number(capacity);
-    if (!capacity.trim() || capNum <= 0) {
-      setError("Capacity must not be 0.");
+    if (!capacity.trim() || isNaN(capNum) || capNum <= 0) {
+      setError("Capacity must be a valid number greater than 0.");
       return;
     }
     setError("");
     onSave({ room_number: roomNumber, capacity: capNum, type });
   };
-
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-3 gap-4">
@@ -84,11 +84,15 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
     </div>
   );
 }
+
 export function RoomsView() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+
+  const [deleteTarget, setDeleteTarget] = useState<Room | null>(null);
 
   const emptyRoom: RoomFormValues = {
     room_number: "",
@@ -166,7 +170,16 @@ export function RoomsView() {
       ? "bg-primary/10 text-primary"
       : "bg-info-light text-info";
 
-  const sorted = [...rooms].sort((a, b) =>
+  const filtered = rooms.filter((r) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      r.room_number.toLowerCase().includes(q) ||
+      r.type.toLowerCase().includes(q)
+    );
+  });
+
+  const sorted = [...filtered].sort((a, b) =>
     a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
   );
 
@@ -189,6 +202,18 @@ export function RoomsView() {
         </Button>
       </div>
 
+      <div className="glass-card rounded-xl p-4">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search room number or type…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+      </div>
+
       <AnimatePresence>
         {showForm && (
           <motion.div
@@ -206,79 +231,100 @@ export function RoomsView() {
         )}
       </AnimatePresence>
 
-      {loading && (
+      {!loading && filtered.length === 0 && !showForm && (
         <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          Loading rooms...
-        </div>
-      )}
-
-      {!loading && rooms.length === 0 && !showForm && (
-        <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          No rooms yet. Click <strong>Add Room</strong> to input the rooms
-          available in STI Malolos.
+          {rooms.length === 0 ? (
+            <>
+              No rooms yet. Click <strong>Add Room</strong> to input the rooms
+              available in STI Malolos.
+            </>
+          ) : (
+            "No rooms match your search."
+          )}
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {sorted.map((r) => {
-          if (editingId === r.room_id) {
+        <AnimatePresence mode="popLayout">
+          {sorted.map((r, index) => {
+            if (editingId === r.room_id) {
+              return (
+                <motion.div
+                  key={r.room_id}
+                  layout
+                  className="glass-card rounded-xl p-4 ring-2 ring-primary/30 md:col-span-2"
+                >
+                  <RoomForm
+                    initial={{
+                      room_number: r.room_number,
+                      capacity: r.capacity,
+                      type: r.type,
+                    }}
+                    onSave={saveEdit}
+                    onCancel={cancelEdit}
+                  />
+                </motion.div>
+              );
+            }
+            const stagger = Math.min(index, 8) * 0.05;
             return (
               <motion.div
                 key={r.room_id}
                 layout
-                className="glass-card rounded-xl p-4 ring-2 ring-primary/30 md:col-span-2"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{
+                  opacity: { duration: 0.3, delay: stagger },
+                  y: { duration: 0.3, delay: stagger },
+                }}
+                className="glass-card rounded-xl p-4 flex items-start justify-between"
               >
-                <RoomForm
-                  initial={{
-                    room_number: r.room_number,
-                    capacity: r.capacity,
-                    type: r.type,
-                  }}
-                  onSave={saveEdit}
-                  onCancel={cancelEdit}
-                />
+                <div>
+                  <p className="font-medium">{r.room_number}</p>
+                  <div className="flex gap-2 mt-2">
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full ${typeColor(r.type)}`}
+                    >
+                      {r.type}
+                    </span>
+                    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                      <Users className="w-3 h-3" /> {r.capacity} seats
+                    </span>
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => startEdit(r)}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setDeleteTarget(r)}
+                  >
+                    <Trash2 className="w-4 h-4 text-destructive" />
+                  </Button>
+                </div>
               </motion.div>
             );
-          }
-          return (
-            <motion.div
-              key={r.room_id}
-              layout
-              className="glass-card rounded-xl p-4 flex items-start justify-between"
-            >
-              <div>
-                <p className="font-medium">{r.room_number}</p>
-                <div className="flex gap-2 mt-2">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full ${typeColor(r.type)}`}
-                  >
-                    {r.type}
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                    <Users className="w-3 h-3" /> {r.capacity} seats
-                  </span>
-                </div>
-              </div>
-              <div className="flex gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => startEdit(r)}
-                >
-                  <Pencil className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeRoom(r.room_id)}
-                >
-                  <Trash2 className="w-4 h-4 text-destructive" />
-                </Button>
-              </div>
-            </motion.div>
-          );
-        })}
+          })}
+        </AnimatePresence>
       </div>
+
+      <ConfirmDeleteDialog
+        open={deleteTarget !== null}
+        title="Delete this room?"
+        description={`Are you sure you want to delete ${deleteTarget?.room_number} `}
+        onConfirm={() => {
+          if (deleteTarget) removeRoom(deleteTarget.room_id);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

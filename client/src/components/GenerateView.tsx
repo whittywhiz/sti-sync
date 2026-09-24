@@ -106,7 +106,12 @@ export function GenerateView() {
         </p>
       </div>
 
-      <div className="glass-card rounded-xl p-6 space-y-4">
+      <motion.div
+        initial={{ opacity: 0, y: 16 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.3 }}
+        className="glass-card rounded-xl p-6 space-y-4"
+      >
         <h3 className="font-heading font-semibold">Current Data</h3>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
           <div className="bg-secondary rounded-lg p-3 text-center">
@@ -156,7 +161,7 @@ export function GenerateView() {
             <p className="text-sm text-destructive font-medium">{error}</p>
           </div>
         )}
-      </div>
+      </motion.div>
 
       {result && (
         <motion.div

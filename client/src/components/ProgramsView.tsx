@@ -1,8 +1,18 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Pencil, Check, X, GraduationCap } from "lucide-react";
+import {
+  Plus,
+  Trash2,
+  Pencil,
+  Check,
+  X,
+  GraduationCap,
+  Search,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 interface Program {
   program_id: number;
@@ -56,6 +66,8 @@ export function ProgramsView() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [search, setSearch] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Program | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -82,30 +94,42 @@ export function ProgramsView() {
   const handleAdd = async (description: string) => {
     if (!description) return;
     try {
-      await fetch("/api/programs", {
+      const res = await fetch("/api/programs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Failed to create program");
+        return;
+      }
       setShowForm(false);
       fetchAll();
     } catch (err) {
       console.error("Failed to create program", err);
+      toast.error("Failed to create program");
     }
   };
 
   const handleEdit = async (description: string) => {
     if (!editingId || !description) return;
     try {
-      await fetch(`/api/programs/${editingId}`, {
+      const res = await fetch(`/api/programs/${editingId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Failed to update program");
+        return;
+      }
       setEditingId(null);
       fetchAll();
     } catch (err) {
       console.error("Failed to update program", err);
+      toast.error("Failed to update program");
     }
   };
 
@@ -117,6 +141,15 @@ export function ProgramsView() {
       console.error("Failed to delete program", err);
     }
   };
+
+  const filtered = programs.filter((p) => {
+    if (!search) return true;
+    return p.description.toLowerCase().includes(search.toLowerCase());
+  });
+
+  const sorted = [...filtered].sort((a, b) =>
+    a.description.localeCompare(b.description),
+  );
 
   return (
     <div className="space-y-6">
@@ -137,12 +170,24 @@ export function ProgramsView() {
         </Button>
       </div>
 
+      <div className="glass-card rounded-xl p-4">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search programs…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
+      </div>
+
       <AnimatePresence>
         {showForm && (
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
             className="glass-card rounded-xl p-5"
           >
             <ProgForm
@@ -154,22 +199,22 @@ export function ProgramsView() {
         )}
       </AnimatePresence>
 
-      {loading && (
+      {!loading && filtered.length === 0 && !showForm && (
         <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          Loading programs...
-        </div>
-      )}
-
-      {!loading && programs.length === 0 && !showForm && (
-        <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          No programs yet. Click <strong>Add Program</strong> to get started.
+          {programs.length === 0 ? (
+            <>
+              No programs yet. Click <strong>Add Program</strong> to get
+              started.
+            </>
+          ) : (
+            "No programs match your search."
+          )}
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {[...programs]
-          .sort((a, b) => a.description.localeCompare(b.description))
-          .map((p) => {
+        <AnimatePresence mode="popLayout">
+          {sorted.map((p, index) => {
             if (editingId === p.program_id) {
               return (
                 <motion.div
@@ -191,10 +236,18 @@ export function ProgramsView() {
             const sectionCount = sections.filter(
               (s) => s.program_id === p.program_id,
             ).length;
+            const stagger = Math.min(index, 8) * 0.05;
             return (
               <motion.div
                 key={p.program_id}
                 layout
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{
+                  opacity: { duration: 0.3, delay: stagger },
+                  y: { duration: 0.3, delay: stagger },
+                }}
                 className="glass-card rounded-xl p-4 flex items-start justify-between"
               >
                 <div>
@@ -220,7 +273,7 @@ export function ProgramsView() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    onClick={() => removeProgram(p.program_id)}
+                    onClick={() => setDeleteTarget(p)}
                   >
                     <Trash2 className="w-4 h-4 text-destructive" />
                   </Button>
@@ -228,7 +281,19 @@ export function ProgramsView() {
               </motion.div>
             );
           })}
+        </AnimatePresence>
       </div>
+
+      <ConfirmDeleteDialog
+        open={deleteTarget !== null}
+        title="Delete this program?"
+        description={`Are you sure you want to delete ${deleteTarget?.description} `}
+        onConfirm={() => {
+          if (deleteTarget) removeProgram(deleteTarget.program_id);
+          setDeleteTarget(null);
+        }}
+        onCancel={() => setDeleteTarget(null)}
+      />
     </div>
   );
 }

@@ -149,7 +149,7 @@ export function DashboardView() {
         setRooms(roomsData);
         setAvailability(availabilityData);
         setDays(daysData);
-        setClasses(classesData);
+        setClasses(Array.isArray(classesData) ? classesData : []);
         setCounts({
           programs: programsData.length,
           professors: employeesData.length,
@@ -159,6 +159,7 @@ export function DashboardView() {
         });
       } catch (err) {
         console.error("Failed to fetch dashboard data", err);
+        setClasses([]);
       } finally {
         setLoading(false);
       }
@@ -186,7 +187,7 @@ export function DashboardView() {
   });
 
   const ongoing = useMemo(() => {
-    if (!isSchoolDay) return [];
+    if (!isSchoolDay || !Array.isArray(classes)) return [];
     return classes.filter((c) => {
       if (c.day !== todayName) return false;
       const start = timeToHourFloat(c.start_time);
@@ -263,13 +264,9 @@ export function DashboardView() {
     return (
       <div className="space-y-6">
         <h2 className="font-heading text-2xl font-bold">Dashboard</h2>
-        <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          Loading dashboard…
-        </div>
       </div>
     );
   }
-
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between flex-wrap gap-2">

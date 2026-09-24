@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
-import { Plus, Trash2, Clock, Pencil, Check, X } from "lucide-react";
+import { Plus, Trash2, Clock, Pencil, Check, X, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
+import { ImportExcelButton } from "@/components/ImportExcelButton";
+import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
 
 interface Employee {
   employee_id: number;
@@ -12,6 +14,7 @@ interface Employee {
   mname: string | null;
   fname: string;
   name: string;
+  useStates;
   position: string | null;
   max_hours_per_day: number | null;
   max_hours_per_week: number | null;
@@ -98,6 +101,7 @@ function ProfessorForm({
   const [maxHoursPerWeek, setMaxHoursPerWeek] = useState(
     initial.maxHoursPerWeek,
   );
+
   const [slots, setSlots] = useState<SlotDraft[]>(initial.slots);
   const [selDayId, setSelDayId] = useState<number>(days[0]?.day_id ?? 1);
   const [selStart, setSelStart] = useState(7);
@@ -112,6 +116,7 @@ function ProfessorForm({
       setSlotError("End time must be after start time.");
       return;
     }
+
     if (slots.some((s) => s.day_id === selDayId)) {
       setSlotError(
         "That day already has a slot — remove it below first if you want to change it.",
@@ -320,7 +325,8 @@ export function ProfessorsView() {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-
+  const [search, setSearch] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
   const emptyForm: ProfessorFormValues = {
     fname: "",
     mname: "",
@@ -466,8 +472,17 @@ export function ProfessorsView() {
       }));
 
   const dayName = (id: number) => days.find((d) => d.day_id === id)?.name ?? "";
+  const filtered = employees.filter((p) => {
+    if (!search) return true;
+    const q = search.toLowerCase();
+    return (
+      p.name.toLowerCase().includes(q) ||
+      (p.department ?? "").toLowerCase().includes(q) ||
+      (p.position ?? "").toLowerCase().includes(q)
+    );
+  });
 
-  const sorted = [...employees].sort((a, b) => a.lname.localeCompare(b.lname));
+  const sorted = [...filtered].sort((a, b) => a.lname.localeCompare(b.lname));
 
   return (
     <div className="space-y-6">
@@ -478,14 +493,31 @@ export function ProfessorsView() {
             Manage faculty and availability
           </p>
         </div>
-        <Button
-          onClick={() => {
-            setShowForm(!showForm);
-            setEditingId(null);
-          }}
-        >
-          <Plus className="w-4 h-4 mr-1" /> Add Professor
-        </Button>
+        <div className="flex gap-2">
+          <ImportExcelButton
+            endpoint="/api/employees/import"
+            onDone={fetchAll}
+          />
+          <Button
+            onClick={() => {
+              setShowForm(!showForm);
+              setEditingId(null);
+            }}
+          >
+            <Plus className="w-4 h-4 mr-1" /> Add Professor
+          </Button>
+        </div>
+      </div>
+      <div className="glass-card rounded-xl p-4">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            placeholder="Search name, department, or position…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
       </div>
 
       <AnimatePresence>
@@ -506,99 +538,114 @@ export function ProfessorsView() {
         )}
       </AnimatePresence>
 
-      {loading && (
-        <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
-          Loading professors...
-        </div>
-      )}
-
       <div className="space-y-3">
-        {sorted.map((p) => {
-          if (editingId === p.employee_id) {
+        <AnimatePresence mode="popLayout">
+          {sorted.map((p, index) => {
+            if (editingId === p.employee_id) {
+              return (
+                <motion.div
+                  key={p.employee_id}
+                  layout
+                  className="glass-card rounded-xl p-4 ring-2 ring-primary/30"
+                >
+                  <ProfessorForm
+                    initial={{
+                      fname: p.fname,
+                      mname: p.mname ?? "",
+                      lname: p.lname,
+                      department: p.department ?? "",
+                      position: p.position ?? "",
+                      maxHoursPerDay:
+                        p.max_hours_per_day != null
+                          ? String(p.max_hours_per_day)
+                          : "",
+                      maxHoursPerWeek:
+                        p.max_hours_per_week != null
+                          ? String(p.max_hours_per_week)
+                          : "",
+                      slots: slotsForEmployee(p.employee_id),
+                    }}
+                    days={days}
+                    onSave={saveEdit}
+                    onCancel={cancelEdit}
+                  />
+                </motion.div>
+              );
+            }
+
+            const stagger = Math.min(index, 8) * 0.05;
             return (
               <motion.div
                 key={p.employee_id}
                 layout
-                className="glass-card rounded-xl p-4 ring-2 ring-primary/30"
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{
+                  opacity: { duration: 0.3, delay: stagger },
+                  y: { duration: 0.3, delay: stagger },
+                }}
+                className="glass-card rounded-xl p-4 flex items-start justify-between"
               >
-                <ProfessorForm
-                  initial={{
-                    fname: p.fname,
-                    mname: p.mname ?? "",
-                    lname: p.lname,
-                    department: p.department ?? "",
-                    position: p.position ?? "",
-                    maxHoursPerDay:
-                      p.max_hours_per_day != null
-                        ? String(p.max_hours_per_day)
-                        : "",
-                    maxHoursPerWeek:
-                      p.max_hours_per_week != null
-                        ? String(p.max_hours_per_week)
-                        : "",
-                    slots: slotsForEmployee(p.employee_id),
-                  }}
-                  days={days}
-                  onSave={saveEdit}
-                  onCancel={cancelEdit}
-                />
+                <div>
+                  <p className="font-medium">{p.name}</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {p.department}
+                    {p.position ? ` • ${p.position}` : ""}
+                    {p.max_hours_per_day != null
+                      ? ` • Max ${p.max_hours_per_day}hrs/day`
+                      : ""}
+                    {p.max_hours_per_week != null
+                      ? ` • Max ${p.max_hours_per_week}hrs/wk`
+                      : ""}
+                  </p>
+                  <div className="flex gap-1.5 mt-2 flex-wrap">
+                    {availability
+                      .filter((a) => a.employee_id === p.employee_id)
+                      .map((a) => (
+                        <span
+                          key={a.availability_id}
+                          className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full"
+                        >
+                          <Clock className="w-3 h-3" />
+                          {SHORT_DAY[dayName(a.day_id)] ??
+                            dayName(a.day_id)}{" "}
+                          {formatTime12hr(a.start_time)}–
+                          {formatTime12hr(a.end_time)}
+                        </span>
+                      ))}
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => startEdit(p.employee_id)}
+                  >
+                    <Pencil className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setDeleteTarget(p)}
+                  >
+                    <Trash2 className="w-4 h-4 text-destructive" />
+                  </Button>
+                </div>
               </motion.div>
             );
-          }
-
-          return (
-            <motion.div
-              key={p.employee_id}
-              layout
-              className="glass-card rounded-xl p-4 flex items-start justify-between"
-            >
-              <div>
-                <p className="font-medium">{p.name}</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {p.department}
-                  {p.position ? ` • ${p.position}` : ""}
-                  {p.max_hours_per_day != null
-                    ? ` • Max ${p.max_hours_per_day}hrs/day`
-                    : ""}
-                  {p.max_hours_per_week != null
-                    ? ` • Max ${p.max_hours_per_week}hrs/wk`
-                    : ""}
-                </p>
-                <div className="flex gap-1.5 mt-2 flex-wrap">
-                  {availability
-                    .filter((a) => a.employee_id === p.employee_id)
-                    .map((a) => (
-                      <span
-                        key={a.availability_id}
-                        className="inline-flex items-center gap-1 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full"
-                      >
-                        <Clock className="w-3 h-3" />
-                        {SHORT_DAY[dayName(a.day_id)] ?? dayName(a.day_id)}{" "}
-                        {formatTime12hr(a.start_time)}–
-                        {formatTime12hr(a.end_time)}
-                      </span>
-                    ))}
-                </div>
-              </div>
-              <div className="flex gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => startEdit(p.employee_id)}
-                >
-                  <Pencil className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => removeProfessor(p.employee_id)}
-                >
-                  <Trash2 className="w-4 h-4 text-destructive" />
-                </Button>
-              </div>
-            </motion.div>
-          );
-        })}
+          })}
+        </AnimatePresence>
+        <ConfirmDeleteDialog
+          open={deleteTarget !== null}
+          title="Delete this professor?"
+          description={`Are you sure you want to delete ${deleteTarget?.name}`}
+          onConfirm={() => {
+            if (deleteTarget) removeProfessor(deleteTarget.employee_id);
+            setDeleteTarget(null);
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
       </div>
     </div>
   );
