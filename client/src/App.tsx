@@ -9,7 +9,7 @@ import NotFound from "./pages/NotFound.tsx";
 const queryClient = new QueryClient();
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
-  const token = localStorage.getItem("authToken");
+  const token = sessionStorage.getItem("authToken");
   return token ? <>{children}</> : <Navigate to="/login" replace />;
 };
 const App = () => (
