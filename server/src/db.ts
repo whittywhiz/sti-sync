@@ -13,6 +13,8 @@ if (!connectionString) {
 
 export const pool = new Pool({
   connectionString,
+  keepAlive: true,
+  idleTimeoutMillis: 10000,
 });
 
 pool.on("connect", () => {

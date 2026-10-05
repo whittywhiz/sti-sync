@@ -22,13 +22,45 @@ export function ImportExcelButton({
     if (!res.ok) {
       toast.error(data.error || "Import failed");
     } else {
-      let msg = `Imported ${data.inserted} rows`;
+      const isProfessorImport = !data.hasOwnProperty("curriculumInserted");
+      const parts: string[] = [];
+      if (data.inserted) {
+        parts.push(
+          isProfessorImport
+            ? `${data.inserted} professor${data.inserted !== 1 ? "s" : ""}`
+            : `${data.inserted} course${data.inserted !== 1 ? "s" : ""}`,
+        );
+      }
+      if (data.curriculumInserted) {
+        parts.push(
+          `${data.curriculumInserted} placement${data.curriculumInserted !== 1 ? "s" : ""}`,
+        );
+      }
+
+      let msg: string;
+      if (parts.length > 0) {
+        msg = `Imported ${parts.join(", ")}`;
+      } else if (isProfessorImport) {
+        msg = "No new professors added";
+      } else {
+        msg = "Erything already exists";
+      }
+
       if (data.skippedAvailability?.length) {
         msg += ` (missing availability: ${data.skippedAvailability.join(", ")})`;
       }
-      toast.success(msg);
+      if (data.unknownDays?.length) {
+        msg += ` (unknown days: ${data.unknownDays.join(", ")})`;
+      }
+
+      if (parts.length > 0) {
+        toast.success(msg);
+      } else {
+        toast(msg);
+      }
       onDone();
     }
+
     e.target.value = "";
   };
 

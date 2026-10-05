@@ -5,8 +5,6 @@ import {
   ConstraintViolation,
   FitnessResult,
   SchedulingInput,
-  RoomData,
-  SectionData,
   AvailabilityData,
 } from "./types";
 
@@ -43,33 +41,9 @@ function toMinutes(time: string): number {
   return h * 60 + m;
 }
 
-function timesOverlap(
-  startA: string,
-  endA: string,
-  startB: string,
-  endB: string,
-): boolean {
-  const aStart = toMinutes(startA);
-  const aEnd = toMinutes(endA);
-  const bStart = toMinutes(startB);
-  const bEnd = toMinutes(endB);
-  return aStart < bEnd && bStart < aEnd;
-}
-
-export function evaluateFitness(
-  assignments: ClassAssignment[],
-  input: SchedulingInput,
-): FitnessResult {
-  const violations: ConstraintViolation[] = [];
-
-  const roomMap = new Map<number, RoomData>(
-    input.rooms.map((r) => [r.room_id, r]),
-  );
-  const sectionMap = new Map<number, SectionData>(
-    input.sections.map((s) => [s.section_id, s]),
-  );
-  const courseMap = new Map(input.courses.map((c) => [c.course_code, c]));
-
+// Lookup maps depend only on `input`, which never changes during a GA run,
+// so build them once instead of on every score.
+function buildCtx(input: SchedulingInput) {
   const availabilityByEmployeeDay = new Map<string, AvailabilityData[]>();
   for (const a of input.availability) {
     const key = `${a.employee_id}-${a.day_id}`;
@@ -78,6 +52,43 @@ export function evaluateFitness(
     }
     availabilityByEmployeeDay.get(key)!.push(a);
   }
+  return {
+    roomMap: new Map(input.rooms.map((r) => [r.room_id, r])),
+    sectionMap: new Map(input.sections.map((s) => [s.section_id, s])),
+    courseMap: new Map(input.courses.map((c) => [c.course_code, c])),
+    employeeMap: new Map(input.employees.map((e) => [e.employee_id, e])),
+    availabilityByEmployeeDay,
+  };
+}
+
+const ctxCache = new WeakMap<SchedulingInput, ReturnType<typeof buildCtx>>();
+
+function getCtx(input: SchedulingInput) {
+  let ctx = ctxCache.get(input);
+  if (!ctx) {
+    ctx = buildCtx(input);
+    ctxCache.set(input, ctx);
+  }
+  return ctx;
+}
+
+export function evaluateFitness(
+  assignments: ClassAssignment[],
+  input: SchedulingInput,
+): FitnessResult {
+  const violations: ConstraintViolation[] = [];
+
+  const {
+    roomMap,
+    sectionMap,
+    courseMap,
+    employeeMap,
+    availabilityByEmployeeDay,
+  } = getCtx(input);
+
+  // Parse each time string once, not once per pair.
+  const startMin = assignments.map((a) => toMinutes(a.start_time));
+  const endMin = assignments.map((a) => toMinutes(a.end_time));
 
   for (let i = 0; i < assignments.length; i++) {
     for (let j = i + 1; j < assignments.length; j++) {
@@ -86,13 +97,7 @@ export function evaluateFitness(
 
       if (a.day_id !== b.day_id) continue;
 
-      const overlaps = timesOverlap(
-        a.start_time,
-        a.end_time,
-        b.start_time,
-        b.end_time,
-      );
-      if (!overlaps) continue;
+      if (!(startMin[i]! < endMin[j]! && startMin[j]! < endMin[i]!)) continue;
 
       if (a.room_id === b.room_id) {
         violations.push({
@@ -145,15 +150,11 @@ export function evaluateFitness(
         });
       }
 
-      const section = sectionMap.get(assignment.section_id);
       const homeRoomNumbers = section
         ? PROGRAM_HOME_LAB_ROOM_NUMBERS[section.program_id]
         : undefined;
       if (
-        room &&
-        course &&
-        room.type &&
-        course.course_type_description.toLowerCase() === "laboratory" &&
+        courseType === "laboratory" &&
         assignment.session_number === 2 &&
         homeRoomNumbers &&
         !homeRoomNumbers.includes(room.room_number)
@@ -166,12 +167,9 @@ export function evaluateFitness(
       }
 
       if (
-        room &&
-        course &&
-        room.type &&
-        course.course_type_description.toLowerCase() === "laboratory" &&
+        courseType === "laboratory" &&
         assignment.session_number === 2 &&
-        room.type.toLowerCase() !== "laboratory"
+        roomType !== "laboratory"
       ) {
         violations.push({
           type: "LAB_PREFERENCE_UNMET",
@@ -184,12 +182,13 @@ export function evaluateFitness(
     const key = `${assignment.employee_id}-${assignment.day_id}`;
     const employeeAvailability = availabilityByEmployeeDay.get(key) || [];
 
+    const assignStart = toMinutes(assignment.start_time);
+    const assignEnd = toMinutes(assignment.end_time);
     const isWithinAvailability = employeeAvailability.some((avail) => {
-      const assignStart = toMinutes(assignment.start_time);
-      const assignEnd = toMinutes(assignment.end_time);
-      const availStart = toMinutes(avail.start_time);
-      const availEnd = toMinutes(avail.end_time);
-      return assignStart >= availStart && assignEnd <= availEnd;
+      return (
+        assignStart >= toMinutes(avail.start_time) &&
+        assignEnd <= toMinutes(avail.end_time)
+      );
     });
 
     if (!isWithinAvailability) {
@@ -204,20 +203,12 @@ export function evaluateFitness(
     }
   }
 
-  const employeeMap = new Map(input.employees.map((e) => [e.employee_id, e]));
-
-  function durationHours(assignment: ClassAssignment): number {
-    return (
-      (toMinutes(assignment.end_time) - toMinutes(assignment.start_time)) / 60
-    );
-  }
-
   const hoursByEmployeeDay = new Map<string, number>();
   const hoursByEmployeeWeek = new Map<number, number>();
 
-  for (const assignment of assignments) {
+  assignments.forEach((assignment, i) => {
     const dayKey = `${assignment.employee_id}-${assignment.day_id}`;
-    const hours = durationHours(assignment);
+    const hours = (endMin[i]! - startMin[i]!) / 60;
     hoursByEmployeeDay.set(
       dayKey,
       (hoursByEmployeeDay.get(dayKey) ?? 0) + hours,
@@ -226,7 +217,7 @@ export function evaluateFitness(
       assignment.employee_id,
       (hoursByEmployeeWeek.get(assignment.employee_id) ?? 0) + hours,
     );
-  }
+  });
 
   for (const [dayKey, totalHours] of hoursByEmployeeDay) {
     const [employeeIdStr, dayIdStr] = dayKey.split("-");

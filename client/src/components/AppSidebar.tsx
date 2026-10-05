@@ -30,15 +30,15 @@ export function AppSidebar() {
   const navigate = useNavigate();
 
   function handleLogout() {
-    localStorage.removeItem("authToken");
+    sessionStorage.removeItem("authToken");
     navigate("/login");
   }
 
   return (
-    <aside className="w-64 h-screen bg-sidebar text-sidebar-foreground flex flex-col">
+    <aside className="w-64 h-screen sticky top-0 flex-shrink-0 bg-sidebar text-sidebar-foreground flex flex-col">
       <div className="p-6 border-b border-sidebar-border flex-shrink-0">
         <img
-          src="/login-icon.png"
+          src="/sidebarlogo.png"
           alt="STI-Sync"
           className="h-14 w-auto rounded-lg"
         />

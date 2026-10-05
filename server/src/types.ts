@@ -35,6 +35,11 @@ export interface CurriculumEntry {
   course_code: string;
 }
 
+export interface CourseEmployeeEntry {
+  course_code: string;
+  employee_id: number;
+}
+
 export interface AvailabilityData {
   availability_id: number;
   employee_id: number;
@@ -54,6 +59,7 @@ export interface SchedulingInput {
   sections: SectionData[];
   courses: CourseData[];
   curriculum: CurriculumEntry[];
+  course_employees: CourseEmployeeEntry[];
   availability: AvailabilityData[];
   days: DayData[];
   schedule_id: number;

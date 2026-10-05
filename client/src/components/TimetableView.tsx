@@ -331,6 +331,7 @@ export function TimetableView() {
   const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const [pendingSlot, setPendingSlot] = useState<VacantSlot | null>(null);
   const calendarWrapperRef = useRef<HTMLDivElement | null>(null);
   const classesRef = useRef<ClassRow[]>([]);
 
@@ -373,24 +374,36 @@ export function TimetableView() {
   const handleMoveClass = async (slot: VacantSlot) => {
     if (!selectedEntry) return;
     setMoving(true);
+
+    const previous = {
+      start_time: selectedEntry.start_time,
+      end_time: selectedEntry.end_time,
+      employee_id: selectedEntry.employee_id,
+      room_id: selectedEntry.room_id,
+      section_id: selectedEntry.section_id,
+      course_code: selectedEntry.course_code,
+      day_id: selectedEntry.day_id,
+      schedule_id: selectedEntry.schedule_id,
+    };
+    const classId = selectedEntry.class_id;
+
     try {
-      const res = await fetch(`/api/classes/${selectedEntry.class_id}`, {
+      const res = await fetch(`/api/classes/${classId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           start_time: slot.start_time,
           end_time: slot.end_time,
-          employee_id: selectedEntry.employee_id,
+          employee_id: previous.employee_id,
           room_id: slot.room_id,
-          section_id: selectedEntry.section_id,
-          course_code: selectedEntry.course_code,
+          section_id: previous.section_id,
+          course_code: previous.course_code,
           day_id: slot.day_id,
-          schedule_id: selectedEntry.schedule_id,
+          schedule_id: previous.schedule_id,
         }),
       });
       if (!res.ok) throw new Error("Move failed");
-      const movedClassId = selectedEntry.class_id;
-      const movedCourseCode = selectedEntry.course_code;
+      const movedCourseCode = previous.course_code;
       setSelectedEntry(null);
 
       await fetchClasses(false);
@@ -403,7 +416,11 @@ export function TimetableView() {
           duration: 10000,
           action: {
             label: "View",
-            onClick: () => goToClass(movedClassId),
+            onClick: () => goToClass(classId),
+          },
+          cancel: {
+            label: "Undo",
+            onClick: () => undoMove(classId, previous),
           },
         },
       );
@@ -412,6 +429,33 @@ export function TimetableView() {
       toast.error("Failed to move class. Please try again.");
     } finally {
       setMoving(false);
+    }
+  };
+  const undoMove = async (
+    classId: number,
+    previous: {
+      start_time: string;
+      end_time: string;
+      employee_id: number;
+      room_id: number;
+      section_id: number;
+      course_code: string;
+      day_id: number;
+      schedule_id: number;
+    },
+  ) => {
+    try {
+      const res = await fetch(`/api/classes/${classId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(previous),
+      });
+      if (!res.ok) throw new Error("Undo failed");
+      await fetchClasses(false);
+      toast.success(`${previous.course_code} move undone`);
+    } catch (err) {
+      console.error("Failed to undo move", err);
+      toast.error("Failed to undo move. Please try again.");
     }
   };
 
@@ -451,6 +495,7 @@ export function TimetableView() {
 
   const openEntry = (entry: ClassRow, e: React.MouseEvent<HTMLDivElement>) => {
     setSlotDayFilter("All Days");
+    setPendingSlot(null);
     setSelectedEntry(entry);
 
     const container = calendarWrapperRef.current;
@@ -547,9 +592,21 @@ export function TimetableView() {
     return true;
   };
 
-  const filteredClasses = classes.filter((c) =>
-    classMatchesFilter(c, filterType, filterValue),
+  const filteredClasses = useMemo(
+    () => classes.filter((c) => classMatchesFilter(c, filterType, filterValue)),
+    [classes, filterType, filterValue],
   );
+
+  const positionedByDay = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof layoutDayClasses>>();
+    for (const day of DAYS) {
+      map.set(
+        day,
+        layoutDayClasses(filteredClasses.filter((c) => c.day === day)),
+      );
+    }
+    return map;
+  }, [filteredClasses]);
 
   const allVacantSlots = useMemo(() => {
     if (!selectedEntry) return [];
@@ -798,10 +855,7 @@ export function TimetableView() {
                   ))}
                 </div>
                 {DAYS.map((day) => {
-                  const dayClasses = filteredClasses.filter(
-                    (c) => c.day === day,
-                  );
-                  const positioned = layoutDayClasses(dayClasses);
+                  const positioned = positionedByDay.get(day) ?? [];
                   return (
                     <div
                       key={day}
@@ -957,68 +1011,118 @@ export function TimetableView() {
                 variant="ghost"
                 size="sm"
                 className="h-6 w-6 p-0 shrink-0"
-                onClick={() => setSelectedEntry(null)}
+                onClick={() => {
+                  setSelectedEntry(null);
+                  setPendingSlot(null);
+                }}
               >
                 <X className="w-3.5 h-3.5" />
               </Button>
             </div>
 
-            <p className="text-[11px] text-muted-foreground pt-1">
-              Select a vacant slot to move this class:
-            </p>
+            {!pendingSlot && (
+              <>
+                <p className="text-[11px] text-muted-foreground pt-1">
+                  Select a vacant slot to move this class:
+                </p>
 
-            <div className="flex gap-1.5 flex-wrap">
-              <Button
-                variant={slotDayFilter === "All Days" ? "default" : "outline"}
-                size="sm"
-                className="text-[11px] h-6 px-2"
-                onClick={() => setSlotDayFilter("All Days")}
-              >
-                All Days
-              </Button>
-              {availableSlotDays.map((d) => (
-                <Button
-                  key={d}
-                  variant={slotDayFilter === d ? "default" : "outline"}
-                  size="sm"
-                  className="text-[11px] h-6 px-2"
-                  onClick={() => setSlotDayFilter(d)}
-                >
-                  {DAY_ABBR[d] ?? d}
-                </Button>
-              ))}
-            </div>
+                <div className="flex gap-1.5 flex-wrap">
+                  <Button
+                    variant={
+                      slotDayFilter === "All Days" ? "default" : "outline"
+                    }
+                    size="sm"
+                    className="text-[11px] h-6 px-2"
+                    onClick={() => setSlotDayFilter("All Days")}
+                  >
+                    All Days
+                  </Button>
+                  {availableSlotDays.map((d) => (
+                    <Button
+                      key={d}
+                      variant={slotDayFilter === d ? "default" : "outline"}
+                      size="sm"
+                      className="text-[11px] h-6 px-2"
+                      onClick={() => setSlotDayFilter(d)}
+                    >
+                      {DAY_ABBR[d] ?? d}
+                    </Button>
+                  ))}
+                </div>
+              </>
+            )}
 
             <div className="flex-1 min-h-0 overflow-y-auto space-y-3 pt-1">
-              {groupedSlots.map((group) => (
-                <div key={group.day} className="space-y-1">
-                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
-                    {group.day}
+              {pendingSlot ? (
+                <div className="space-y-3 p-2">
+                  <p className="text-xs text-muted-foreground">
+                    Move{" "}
+                    <span className="font-semibold text-foreground">
+                      {selectedEntry.course_code}
+                    </span>{" "}
+                    to:
                   </p>
-                  <div className="space-y-1">
-                    {group.slots.map((slot, i) => (
-                      <button
-                        key={i}
-                        disabled={moving}
-                        onClick={() => handleMoveClass(slot)}
-                        className="w-full text-left text-xs rounded-md px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between border border-transparent hover:border-border"
-                      >
-                        <span>
-                          {formatTime12hr(slot.start_time)}–
-                          {formatTime12hr(slot.end_time)}
-                        </span>
-                        <span className="text-muted-foreground">
-                          {slot.room_number}
-                        </span>
-                      </button>
-                    ))}
+                  <div className="rounded-md border border-border px-3 py-2 text-sm">
+                    {pendingSlot.day} · {formatTime12hr(pendingSlot.start_time)}
+                    –{formatTime12hr(pendingSlot.end_time)} ·{" "}
+                    {pendingSlot.room_number}
+                  </div>
+                  <div className="flex gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      className="flex-1"
+                      disabled={moving}
+                      onClick={() => {
+                        handleMoveClass(pendingSlot);
+                        setPendingSlot(null);
+                      }}
+                    >
+                      Confirm Move
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="flex-1"
+                      disabled={moving}
+                      onClick={() => setPendingSlot(null)}
+                    >
+                      Cancel
+                    </Button>
                   </div>
                 </div>
-              ))}
-              {groupedSlots.length === 0 && (
-                <p className="text-xs text-muted-foreground p-2">
-                  No vacant slots available.
-                </p>
+              ) : (
+                <>
+                  {groupedSlots.map((group) => (
+                    <div key={group.day} className="space-y-1">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                        {group.day}
+                      </p>
+                      <div className="space-y-1">
+                        {group.slots.map((slot, i) => (
+                          <button
+                            key={i}
+                            disabled={moving}
+                            onClick={() => setPendingSlot(slot)}
+                            className="w-full text-left text-xs rounded-md px-3 py-2 hover:bg-muted transition-colors flex items-center justify-between border border-transparent hover:border-border"
+                          >
+                            <span>
+                              {formatTime12hr(slot.start_time)}–
+                              {formatTime12hr(slot.end_time)}
+                            </span>
+                            <span className="text-muted-foreground">
+                              {slot.room_number}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {groupedSlots.length === 0 && (
+                    <p className="text-xs text-muted-foreground p-2">
+                      No vacant slots available.
+                    </p>
+                  )}
+                </>
               )}
             </div>
           </div>

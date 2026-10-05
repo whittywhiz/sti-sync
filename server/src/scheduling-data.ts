@@ -10,6 +10,7 @@ export async function buildSchedulingInputFromDB(
     sectionsResult,
     coursesResult,
     curriculumResult,
+    courseEmployeesResult,
     availabilityResult,
     daysResult,
   ] = await Promise.all([
@@ -32,8 +33,13 @@ export async function buildSchedulingInputFromDB(
       JOIN course_type ct ON c.course_type_id = ct.course_type_id
     `),
     pool.query(
-      "SELECT curriculum_id, year_level, program_id, course_code FROM curriculum",
+      `SELECT c.curriculum_id, c.year_level, c.program_id, c.course_code
+       FROM curriculum c
+       JOIN schedule s ON s.schedule_id = $1
+       WHERE c.term = s.school_term`,
+      [scheduleId],
     ),
+    pool.query("SELECT course_code, employee_id FROM course_employee"),
     pool.query(
       "SELECT availability_id, employee_id, day_id, start_time, end_time FROM availability",
     ),
@@ -46,6 +52,7 @@ export async function buildSchedulingInputFromDB(
     sections: sectionsResult.rows,
     courses: coursesResult.rows,
     curriculum: curriculumResult.rows,
+    course_employees: courseEmployeesResult.rows,
     availability: availabilityResult.rows,
     days: daysResult.rows,
     schedule_id: scheduleId,

@@ -32,7 +32,7 @@ export default function LoginPage() {
       const data = await res.json();
 
       if (res.ok && data.success) {
-        localStorage.setItem("authToken", data.token);
+        sessionStorage.setItem("authToken", data.token);
         navigate("/");
       } else {
         setHint(data.error || "Invalid password");

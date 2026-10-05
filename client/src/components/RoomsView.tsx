@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { motion, AnimatePresence } from "framer-motion";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { toast } from "sonner";
 
 interface Room {
   room_id: number;
@@ -36,8 +37,13 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
       return;
     }
     const capNum = Number(capacity);
-    if (!capacity.trim() || isNaN(capNum) || capNum <= 0) {
-      setError("Capacity must be a valid number greater than 0.");
+    if (
+      !capacity.trim() ||
+      isNaN(capNum) ||
+      capNum <= 0 ||
+      !Number.isInteger(capNum)
+    ) {
+      setError("Capacity must be a whole number greater than 0.");
       return;
     }
     setError("");
@@ -70,6 +76,7 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
         >
           <option value="Lecture">Lecture</option>
           <option value="Laboratory">Laboratory</option>
+          <option value="PE">PE</option>
         </select>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
@@ -77,7 +84,7 @@ function RoomForm({ initial, onSave, onCancel }: RoomFormProps) {
         <Button size="sm" onClick={handleSave}>
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button size="sm" variant="outline" onClick={onCancel}>
           <X className="w-4 h-4 mr-1" /> Cancel
         </Button>
       </div>
@@ -93,6 +100,8 @@ export function RoomsView() {
   const [search, setSearch] = useState("");
 
   const [deleteTarget, setDeleteTarget] = useState<Room | null>(null);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
 
   const emptyRoom: RoomFormValues = {
     room_number: "",
@@ -120,15 +129,21 @@ export function RoomsView() {
   const handleSubmit = async (values: RoomFormValues) => {
     if (!values.room_number) return;
     try {
-      await fetch("/api/rooms", {
+      const res = await fetch("/api/rooms", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Could not add the room.");
+        return;
+      }
       setShowForm(false);
       fetchRooms();
     } catch (err) {
       console.error("Failed to create room", err);
+      toast.error("Could not add the room.");
     }
   };
 
@@ -140,29 +155,79 @@ export function RoomsView() {
   const saveEdit = async (values: RoomFormValues) => {
     if (!editingId || !values.room_number) return;
     try {
-      await fetch(`/api/rooms/${editingId}`, {
+      const res = await fetch(`/api/rooms/${editingId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(values),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Could not update the room.");
+        return;
+      }
       setEditingId(null);
       fetchRooms();
     } catch (err) {
       console.error("Failed to update room", err);
+      toast.error("Could not update the room.");
     }
   };
-
   const cancelEdit = () => {
     setEditingId(null);
   };
 
   const removeRoom = async (id: number) => {
     try {
-      await fetch(`/api/rooms/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/rooms/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Failed to delete room");
+        return;
+      }
+      setSelected((s) => s.filter((x) => x !== id));
       fetchRooms();
     } catch (err) {
       console.error("Failed to delete room", err);
+      toast.error("Failed to delete room");
     }
+  };
+
+  const toggleSelect = (id: number) =>
+    setSelected((s) =>
+      s.includes(id) ? s.filter((x) => x !== id) : [...s, id],
+    );
+
+  const removeSelected = async () => {
+    const ids = [...selected];
+    const failed: number[] = [];
+    let firstError = "";
+    for (const id of ids) {
+      try {
+        const res = await fetch(`/api/rooms/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          failed.push(id);
+          if (!firstError) firstError = data.error ?? "";
+        }
+      } catch {
+        failed.push(id);
+      }
+    }
+    const deleted = ids.length - failed.length;
+    if (deleted > 0) {
+      toast.success(`Deleted ${deleted} room${deleted !== 1 ? "s" : ""}`);
+    }
+    if (failed.length > 0) {
+      const names = rooms
+        .filter((r) => failed.includes(r.room_id))
+        .map((r) => r.room_number)
+        .join(", ");
+      toast.error(
+        `Could not delete ${names}${firstError ? `: ${firstError}` : ""}`,
+      );
+    }
+    setSelected(failed);
+    fetchRooms();
   };
 
   const typeColor = (t: string) =>
@@ -182,38 +247,68 @@ export function RoomsView() {
   const sorted = [...filtered].sort((a, b) =>
     a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
   );
-
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-heading text-2xl font-bold">Rooms</h2>
-          <p className="text-muted-foreground mt-1">
-            Classrooms and laboratories
-          </p>
+      <div className="sticky top-0 z-50 bg-background pt-4 pb-4 -mx-6 px-6">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-heading text-2xl font-bold">Rooms</h2>
+            <p className="text-muted-foreground mt-1">
+              Classrooms and laboratories
+            </p>
+          </div>
+          <Button
+            onClick={() => {
+              setShowForm(!showForm);
+              setEditingId(null);
+            }}
+          >
+            <Plus className="w-4 h-4 mr-1" /> Add Room
+          </Button>
         </div>
-        <Button
-          onClick={() => {
-            setShowForm(!showForm);
-            setEditingId(null);
-          }}
-        >
-          <Plus className="w-4 h-4 mr-1" /> Add Room
-        </Button>
+
+        <div className="glass-card rounded-xl p-4">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search room number or type…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setEditingId(null);
+              }}
+              className="pl-9"
+            />
+          </div>
+        </div>
+
+        {selected.length > 0 && (
+          <div className="glass-card rounded-xl mt-3 px-4 py-2 flex items-center justify-between text-sm">
+            <span className="font-medium">{selected.length} selected</span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelected(sorted.map((r) => r.room_id))}
+              >
+                Select all ({sorted.length})
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="w-4 h-4 mr-1" /> Delete selected
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="glass-card rounded-xl p-4">
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search room number or type…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
-        </div>
-      </div>
-
+      {/* SCROLLABLE CONTENT */}
       <AnimatePresence>
         {showForm && (
           <motion.div
@@ -266,21 +361,31 @@ export function RoomsView() {
                 </motion.div>
               );
             }
-            const stagger = Math.min(index, 8) * 0.05;
+            const stagger = search ? 0 : Math.min(index, 8) * 0.05;
+            const isSelected = selected.includes(r.room_id);
             return (
               <motion.div
                 key={r.room_id}
-                layout
-                initial={{ opacity: 0, y: 16 }}
+                layout={!search}
+                initial={search ? false : { opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95 }}
                 transition={{
-                  opacity: { duration: 0.3, delay: stagger },
-                  y: { duration: 0.3, delay: stagger },
+                  opacity: { duration: 0.2, delay: stagger },
+                  y: { duration: 0.2, delay: stagger },
                 }}
-                className="glass-card rounded-xl p-4 flex items-start justify-between"
+                className={`glass-card rounded-xl p-4 flex items-start justify-between gap-3 ${
+                  isSelected ? "ring-2 ring-primary/40" : ""
+                }`}
               >
-                <div>
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleSelect(r.room_id)}
+                  aria-label={`Select room ${r.room_number}`}
+                  className="self-center h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                />
+                <div className="min-w-0 flex-1">
                   <p className="font-medium">{r.room_number}</p>
                   <div className="flex gap-2 mt-2">
                     <span
@@ -318,12 +423,23 @@ export function RoomsView() {
       <ConfirmDeleteDialog
         open={deleteTarget !== null}
         title="Delete this room?"
-        description={`Are you sure you want to delete ${deleteTarget?.room_number} `}
+        description={`Are you sure you want to delete ${deleteTarget?.room_number}?`}
         onConfirm={() => {
           if (deleteTarget) removeRoom(deleteTarget.room_id);
           setDeleteTarget(null);
         }}
         onCancel={() => setDeleteTarget(null)}
+      />
+
+      <ConfirmDeleteDialog
+        open={bulkDeleteOpen}
+        title={`Delete ${selected.length} selected room${selected.length !== 1 ? "s" : ""}?`}
+        description="Rooms used by scheduled classes can't be deleted and will stay selected."
+        onConfirm={() => {
+          setBulkDeleteOpen(false);
+          removeSelected();
+        }}
+        onCancel={() => setBulkDeleteOpen(false)}
       />
     </div>
   );

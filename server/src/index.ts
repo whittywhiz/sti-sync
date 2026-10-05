@@ -9,18 +9,39 @@ import { randomInt } from "crypto";
 import dotenv from "dotenv";
 import multer from "multer";
 import * as XLSX from "xlsx";
+import type { PoolClient } from "pg";
+
+dotenv.config();
 
 const upload = multer({ storage: multer.memoryStorage() });
-
-dotenv.config();
+const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
+const TERMS = ["1st Semester", "2nd Semester"];
+function toHHMM(v: any): string | null {
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v === "number") {
+    const mins = Math.round(v * 24 * 60);
+    const h = Math.floor(mins / 60) % 24;
+    return `${String(h).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
+  }
+  const m = String(v)
+    .trim()
+    .match(/^(\d{1,2})[:.\s]+(\d{2})\s*([AaPp][Mm])?$/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const ap = m[3]?.toLowerCase();
+  if (ap === "pm" && h < 12) h += 12;
+  if (ap === "am" && h === 12) h = 0;
+  if (h > 23 || Number(m[2]) > 59) return null;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
 
 const PORT = (process.env as any).PORT || 3000;
-dotenv.config();
 
 const app = express();
 
 app.use(cors());
 app.use(express.json());
+
 app.post("/employees/import", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -48,7 +69,7 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
   }
 
   const keyOf = (r: any) =>
-    `${(r.lname || "").trim()}|${(r.fname || "").trim()}|${(r.mname || "").trim()}`;
+    `${String(r.lname || "").trim()}|${String(r.fname || "").trim()}|${String(r.mname || "").trim()}`.toLowerCase();
   const byEmp = new Map<string, any[]>();
   for (const row of rows) {
     if (!row.lname || !row.fname) continue;
@@ -77,6 +98,21 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
     dayResult.rows.map((r: any) => [r.name, r.day_id]),
   );
 
+  const existingResult = await pool.query(
+    "SELECT lname, fname, COALESCE(mname, '') AS mname FROM employee",
+  );
+  const existingKeys = new Set(
+    existingResult.rows.map((r: any) =>
+      `${(r.lname ?? "").trim()}|${(r.fname ?? "").trim()}|${r.mname.trim()}`.toLowerCase(),
+    ),
+  );
+  const skippedExisting: string[] = [];
+
+  const toMin = (t: string) =>
+    Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5));
+  const toStr = (m: number) =>
+    `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -84,19 +120,25 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
     const skippedAvailability: string[] = [];
     const unknownDays: string[] = [];
 
-    for (const [, empRows] of byEmp) {
+    for (const [key, empRows] of byEmp) {
       const first = empRows[0];
-      const fullName = `${first.fname} ${first.lname}`;
+      const fullName = `${first.fname} ${first.lname}`
+        .replace(/\s+/g, " ")
+        .trim();
+      if (existingKeys.has(key)) {
+        skippedExisting.push(fullName);
+        continue;
+      }
       const result = await client.query(
         `INSERT INTO employee (department, lname, mname, fname, position, username, max_hours_per_day, max_hours_per_week)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING employee_id`,
         [
-          first.department || null,
-          first.lname,
-          first.mname || null,
-          first.fname,
-          first.position || null,
-          first.username || null,
+          first.department ? String(first.department).trim() : "Unassigned",
+          String(first.lname).trim(),
+          first.mname ? String(first.mname).trim() : null,
+          String(first.fname).trim(),
+          first.position ? String(first.position).trim() : null,
+          null,
           first.max_hours_per_day ?? null,
           first.max_hours_per_week ?? null,
         ],
@@ -104,6 +146,7 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
       const empId = result.rows[0].employee_id;
       inserted++;
 
+      const slotsByDay = new Map<number, { start: number; end: number }[]>();
       for (const row of empRows) {
         if (
           row.availability_day &&
@@ -115,12 +158,34 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
             unknownDays.push(`${fullName} (${row.availability_day})`);
             continue;
           }
-          await client.query(
-            `INSERT INTO availability (start_time, end_time, day_id, employee_id) VALUES ($1, $2, $3, $4)`,
-            [row.availability_start, row.availability_end, dayId, empId],
-          );
+          const start = toHHMM(row.availability_start);
+          const end = toHHMM(row.availability_end);
+          if (!start || !end) {
+            unknownDays.push(
+              `${fullName} (bad time on ${row.availability_day})`,
+            );
+            continue;
+          }
+          if (!slotsByDay.has(dayId)) slotsByDay.set(dayId, []);
+          slotsByDay.get(dayId)!.push({ start: toMin(start), end: toMin(end) });
         } else {
           skippedAvailability.push(fullName);
+        }
+      }
+
+      for (const [dayId, list] of slotsByDay) {
+        list.sort((a, b) => a.start - b.start);
+        const merged = [{ ...list[0]! }];
+        for (const s of list.slice(1)) {
+          const last = merged[merged.length - 1]!;
+          if (s.start <= last.end) last.end = Math.max(last.end, s.end);
+          else merged.push({ ...s });
+        }
+        for (const m of merged) {
+          await client.query(
+            `INSERT INTO availability (start_time, end_time, day_id, employee_id) VALUES ($1, $2, $3, $4)`,
+            [toStr(m.start), toStr(m.end), dayId, empId],
+          );
         }
       }
     }
@@ -129,6 +194,7 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
     res.json({
       success: true,
       inserted,
+      skippedExisting,
       skippedAvailability: [...new Set(skippedAvailability)],
       unknownDays: [...new Set(unknownDays)],
     });
@@ -139,7 +205,6 @@ app.post("/employees/import", upload.single("file"), async (req, res) => {
     client.release();
   }
 });
-
 app.post("/courses/import", upload.single("file"), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
 
@@ -166,9 +231,35 @@ app.post("/courses/import", upload.single("file"), async (req, res) => {
     });
   }
 
+  const TYPE_ALIASES: Record<string, string> = {
+    lec: "Lecture",
+    lecture: "Lecture",
+    lab: "Laboratory",
+    laboratory: "Laboratory",
+    pe: "PE",
+  };
+  const TERM_ALIASES: Record<string, string> = {
+    "1st term": "1st Semester",
+    "1st semester": "1st Semester",
+    "2nd term": "2nd Semester",
+    "2nd semester": "2nd Semester",
+  };
+  const clean = (v: any) =>
+    String(v ?? "")
+      .replace(/\s+/g, " ")
+      .trim();
+
   const byCode = new Map<string, any[]>();
   for (const row of rows) {
+    row.course_code = clean(row.course_code);
     if (!row.course_code) continue;
+    row.course_description = clean(row.course_description);
+    const type = clean(row.course_type);
+    row.course_type = TYPE_ALIASES[type.toLowerCase()] ?? type;
+    row.program = clean(row.program);
+    row.year_level = clean(row.year_level);
+    const term = clean(row.term ?? row.school_term);
+    row.term = TERM_ALIASES[term.toLowerCase()] ?? term;
     if (!byCode.has(row.course_code)) byCode.set(row.course_code, []);
     byCode.get(row.course_code)!.push(row);
   }
@@ -212,6 +303,9 @@ app.post("/courses/import", upload.single("file"), async (req, res) => {
       if (!YEAR_LEVELS.includes(row.year_level)) {
         errors.push(`${code}: invalid year_level "${row.year_level}"`);
       }
+      if (!TERMS.includes(row.term)) {
+        errors.push(`${code}: invalid term "${row.term}"`);
+      }
     }
   }
 
@@ -230,19 +324,21 @@ app.post("/courses/import", upload.single("file"), async (req, res) => {
     for (const [code, courseRows] of byCode) {
       const first = courseRows[0];
       const courseTypeId = courseTypeMap.get(first.course_type);
-      await client.query(
-        `INSERT INTO course (course_code, course_description, course_type_id) VALUES ($1, $2, $3)`,
+      const c = await client.query(
+        `INSERT INTO course (course_code, course_description, course_type_id)
+         VALUES ($1, $2, $3) ON CONFLICT (course_code) DO NOTHING`,
         [code, first.course_description, courseTypeId],
       );
-      inserted++;
+      inserted += c.rowCount ?? 0;
 
       for (const row of courseRows) {
         const programId = programMap.get(row.program);
-        await client.query(
-          `INSERT INTO curriculum (year_level, program_id, course_code) VALUES ($1, $2, $3)`,
-          [row.year_level, programId, code],
+        const r = await client.query(
+          `INSERT INTO curriculum (year_level, program_id, course_code, term)
+           VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+          [row.year_level, programId, code, row.term],
         );
-        curriculumInserted++;
+        curriculumInserted += r.rowCount ?? 0;
       }
     }
 
@@ -255,8 +351,6 @@ app.post("/courses/import", upload.single("file"), async (req, res) => {
     client.release();
   }
 });
-const YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"];
-
 app.get("/", (req: Request, res: Response) => {
   res.json({ message: "STI-Sync API is running" });
 });
@@ -335,6 +429,8 @@ app.post("/login", async (req, res) => {
 const RESET_TTL_MS = 10 * 60 * 1000;
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_CODE_ATTEMPTS = 5;
+let generateInProgress = false;
+let lastGenerateResult: any = null;
 let pendingReset: {
   code: string;
   expiresAt: number;
@@ -494,6 +590,7 @@ app.get("/days", async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: "Failed to fetch days" });
   }
 });
+
 app.get("/course-types", async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
@@ -534,6 +631,64 @@ app.get("/courses", async (req: Request, res: Response) => {
   }
 });
 
+// Get all professors assigned to a course
+app.get("/courses/:code/employees", async (req: Request, res: Response) => {
+  try {
+    const { code } = req.params;
+    const result = await pool.query(
+      `SELECT e.employee_id, e.name, e.department
+       FROM course_employee ce
+       JOIN employee e ON e.employee_id = ce.employee_id
+       WHERE ce.course_code = $1`,
+      [code],
+    );
+    res.json(result.rows);
+  } catch (err: any) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to fetch course professors" });
+  }
+});
+
+// Replace the full set of assigned professors for a course
+app.put("/courses/:code/employees", async (req: Request, res: Response) => {
+  const { code } = req.params;
+  const { employee_ids } = req.body;
+
+  if (!Array.isArray(employee_ids)) {
+    return res
+      .status(400)
+      .json({ success: false, error: "employee_ids must be an array" });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM course_employee WHERE course_code = $1", [
+      code,
+    ]);
+
+    for (const empId of employee_ids) {
+      await client.query(
+        "INSERT INTO course_employee (course_code, employee_id) VALUES ($1, $2)",
+        [code, empId],
+      );
+    }
+
+    await client.query("COMMIT");
+    res.json({ success: true, count: employee_ids.length });
+  } catch (err: any) {
+    await client.query("ROLLBACK");
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to update course professors" });
+  } finally {
+    client.release();
+  }
+});
+
 app.get("/sections", async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
@@ -545,6 +700,7 @@ app.get("/sections", async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: "Failed to fetch sections" });
   }
 });
+
 app.post("/sections", async (req: Request, res: Response) => {
   const { number_of_students, year_level, program_id, section_name } = req.body;
   if (!YEAR_LEVELS.includes(year_level)) {
@@ -566,20 +722,49 @@ app.post("/sections", async (req: Request, res: Response) => {
   }
 });
 
-app.get("/curriculum", async (req: Request, res: Response) => {
+async function autoAssignMinorProfessors(courseCode: string) {
+  await pool.query(
+    `INSERT INTO course_employee (course_code, employee_id)
+     SELECT $1::varchar, e.employee_id
+     FROM employee e
+          WHERE e.department IN ('General Education', 'PE Department')
+       AND NOT EXISTS (
+         SELECT 1 FROM course_employee WHERE course_code = $1::varchar
+       )
+     ON CONFLICT DO NOTHING`,
+    [courseCode],
+  );
+}
+
+app.put("/curriculum/:id/subject-type", async (req: Request, res: Response) => {
+  const { subject_type } = req.body;
+  if (!["Major", "Minor"].includes(subject_type))
+    return res
+      .status(400)
+      .json({ error: "subject_type must be Major or Minor" });
+  try {
+    const r = await pool.query(
+      "UPDATE curriculum SET subject_type = $1 WHERE curriculum_id = $2 RETURNING course_code",
+      [subject_type, req.params.id],
+    );
+    if (r.rowCount === 0) return res.status(404).json({ error: "Not found" });
+    if (subject_type === "Minor")
+      await autoAssignMinorProfessors(r.rows[0].course_code);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+app.get("/curriculum", async (_req: Request, res: Response) => {
   try {
     const result = await pool.query(
       "SELECT * FROM curriculum ORDER BY curriculum_id",
     );
     res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to fetch curriculum" });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/availability", async (req: Request, res: Response) => {
   try {
     const result = await pool.query(
@@ -632,10 +817,31 @@ app.get("/classes", async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: "Failed to fetch classes" });
   }
 });
+async function roomExists(roomNumber: any, excludeId?: string) {
+  const r = await pool.query(
+    `SELECT 1 FROM room
+     WHERE LOWER(REGEXP_REPLACE(room_number, '\\s', '', 'g')) = $1
+       AND ($2::int IS NULL OR room_id <> $2::int)
+     LIMIT 1`,
+    [
+      String(roomNumber ?? "")
+        .toLowerCase()
+        .replace(/\s+/g, ""),
+      excludeId ?? null,
+    ],
+  );
+  return r.rows.length > 0;
+}
 
 app.post("/rooms", async (req: Request, res: Response) => {
   const { room_number, capacity, type } = req.body;
   try {
+    if (await roomExists(room_number)) {
+      return res.status(409).json({
+        success: false,
+        error: "A room with this number already exists.",
+      });
+    }
     const result = await pool.query(
       "INSERT INTO room (room_number, capacity, type) VALUES ($1, $2, $3) RETURNING *",
       [room_number, capacity, type],
@@ -648,7 +854,7 @@ app.post("/rooms", async (req: Request, res: Response) => {
 });
 
 app.post("/programs", async (req: Request, res: Response) => {
-  const { description } = req.body;
+  const description = (req.body.description ?? "").trim().replace(/\s+/g, " ");
   try {
     const result = await pool.query(
       "INSERT INTO program (description) VALUES ($1) RETURNING *",
@@ -696,6 +902,23 @@ app.post("/course-types", async (req: Request, res: Response) => {
       .json({ success: false, error: "Failed to create course type" });
   }
 });
+async function employeeExists(
+  lname: any,
+  fname: any,
+  mname: any,
+  excludeId?: string,
+) {
+  const r = await pool.query(
+    `SELECT 1 FROM employee
+     WHERE LOWER(TRIM(lname)) = LOWER(TRIM($1))
+       AND LOWER(TRIM(fname)) = LOWER(TRIM($2))
+       AND LOWER(TRIM(COALESCE(mname, ''))) = LOWER(TRIM($3))
+       AND ($4::int IS NULL OR employee_id <> $4::int)
+     LIMIT 1`,
+    [lname ?? "", fname ?? "", mname ?? "", excludeId ?? null],
+  );
+  return r.rows.length > 0;
+}
 
 app.post("/employees", async (req: Request, res: Response) => {
   const {
@@ -709,6 +932,12 @@ app.post("/employees", async (req: Request, res: Response) => {
     max_hours_per_week,
   } = req.body;
   try {
+    if (await employeeExists(lname, fname, mname)) {
+      return res.status(409).json({
+        success: false,
+        error: "A professor with this name already exists.",
+      });
+    }
     const result = await pool.query(
       `INSERT INTO employee
         (department, lname, mname, fname, position, username, max_hours_per_day, max_hours_per_week)
@@ -733,32 +962,109 @@ app.post("/employees", async (req: Request, res: Response) => {
   }
 });
 
+app.put("/employees/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const {
+    department,
+    lname,
+    mname,
+    fname,
+    position,
+    username,
+    max_hours_per_day,
+    max_hours_per_week,
+  } = req.body;
+  try {
+    if (await employeeExists(lname, fname, mname, String(id))) {
+      return res.status(409).json({
+        success: false,
+        error: "Another professor with this name already exists.",
+      });
+    }
+    const result = await pool.query(
+      `UPDATE employee
+       SET department = $1, lname = $2, mname = $3, fname = $4, position = $5,
+           username = $6, max_hours_per_day = $7, max_hours_per_week = $8
+       WHERE employee_id = $9 RETURNING *`,
+      [
+        department,
+        lname,
+        mname,
+        fname,
+        position,
+        username || null,
+        max_hours_per_day ?? null,
+        max_hours_per_week ?? null,
+        id,
+      ],
+    );
+    if (result.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Employee not found" });
+    }
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to update employee" });
+  }
+});
+
 app.post("/courses", async (req: Request, res: Response) => {
-  const { course_code, course_description, course_type_id } = req.body;
+  const course_code = String(req.body.course_code ?? "").trim();
+  const { course_description, course_type_id } = req.body;
   try {
     const result = await pool.query(
       "INSERT INTO course (course_code, course_description, course_type_id) VALUES ($1, $2, $3) RETURNING *",
       [course_code, course_description, course_type_id],
     );
     res.status(201).json(result.rows[0]);
-  } catch (err) {
+  } catch (err: any) {
+    if (err.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        error: "A course with this code already exists.",
+      });
+    }
     console.error(err);
     res.status(500).json({ success: false, error: "Failed to create course" });
   }
 });
 
 app.post("/curriculum", async (req: Request, res: Response) => {
-  const { year_level, program_id, course_code } = req.body;
+  const {
+    year_level,
+    program_id,
+    course_code,
+    term = "1st Semester",
+    subject_type = null,
+  } = req.body;
   if (!YEAR_LEVELS.includes(year_level)) {
     return res
       .status(400)
       .json({ success: false, error: "Invalid year level" });
   }
+  if (!TERMS.includes(term)) {
+    return res.status(400).json({ success: false, error: "Invalid term" });
+  }
+  if (subject_type !== null && !["Major", "Minor"].includes(subject_type)) {
+    return res
+      .status(400)
+      .json({ success: false, error: "Invalid subject type" });
+  }
   try {
     const result = await pool.query(
-      "INSERT INTO curriculum (year_level, program_id, course_code) VALUES ($1, $2, $3) RETURNING *",
-      [year_level, program_id, course_code],
+      `INSERT INTO curriculum (year_level, program_id, course_code, term, subject_type)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT ON CONSTRAINT curriculum_program_year_course_term_key
+       DO UPDATE SET subject_type = COALESCE(EXCLUDED.subject_type, curriculum.subject_type)
+       RETURNING *`,
+      [year_level, program_id, course_code, term, subject_type],
     );
+    if (result.rows[0].subject_type === "Minor")
+      await autoAssignMinorProfessors(course_code);
     res.status(201).json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -767,7 +1073,6 @@ app.post("/curriculum", async (req: Request, res: Response) => {
       .json({ success: false, error: "Failed to create curriculum entry" });
   }
 });
-
 app.post("/schedules", async (req: Request, res: Response) => {
   const { academic_year, school_term, start_date, end_date } = req.body;
   try {
@@ -837,6 +1142,12 @@ app.put("/rooms/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const { room_number, capacity, type } = req.body;
   try {
+    if (await roomExists(room_number, String(id))) {
+      return res.status(409).json({
+        success: false,
+        error: "Another room with this number already exists.",
+      });
+    }
     const result = await pool.query(
       "UPDATE room SET room_number = $1, capacity = $2, type = $3 WHERE room_id = $4 RETURNING *",
       [room_number, capacity, type, id],
@@ -850,9 +1161,10 @@ app.put("/rooms/:id", async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: "Failed to update room" });
   }
 });
+
 app.put("/programs/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { description } = req.body;
+  const description = (req.body.description ?? "").trim().replace(/\s+/g, " ");
   try {
     const result = await pool.query(
       "UPDATE program SET description = $1 WHERE program_id = $2 RETURNING *",
@@ -898,50 +1210,6 @@ app.put("/course-types/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.put("/employees/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const {
-    department,
-    lname,
-    mname,
-    fname,
-    position,
-    username,
-    max_hours_per_day,
-    max_hours_per_week,
-  } = req.body;
-  try {
-    const result = await pool.query(
-      `UPDATE employee
-       SET department = $1, lname = $2, mname = $3, fname = $4, position = $5,
-           username = $6, max_hours_per_day = $7, max_hours_per_week = $8
-       WHERE employee_id = $9 RETURNING *`,
-      [
-        department,
-        lname,
-        mname,
-        fname,
-        position,
-        username || null,
-        max_hours_per_day ?? null,
-        max_hours_per_week ?? null,
-        id,
-      ],
-    );
-    if (result.rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Employee not found" });
-    }
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to update employee" });
-  }
-});
-
 app.put("/courses/:code", async (req: Request, res: Response) => {
   const { code } = req.params;
   const { course_description, course_type_id } = req.body;
@@ -959,6 +1227,56 @@ app.put("/courses/:code", async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Failed to update course" });
+  }
+});
+app.put("/courses/:code/curriculum", async (req: Request, res: Response) => {
+  const { code } = req.params;
+  const { placements } = req.body;
+  if (!Array.isArray(placements)) {
+    return res
+      .status(400)
+      .json({ success: false, error: "placements must be an array" });
+  }
+  for (const p of placements) {
+    if (!YEAR_LEVELS.includes(p.year_level) || !TERMS.includes(p.term)) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid year level or term" });
+    }
+    if (
+      p.subject_type !== null &&
+      !["Major", "Minor"].includes(p.subject_type)
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid subject type" });
+    }
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM curriculum WHERE course_code = $1", [code]);
+    for (const p of placements) {
+      await client.query(
+        `INSERT INTO curriculum (year_level, program_id, course_code, term, subject_type)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT ON CONSTRAINT curriculum_program_year_course_term_key DO NOTHING`,
+        [p.year_level, p.program_id, code, p.term, p.subject_type],
+      );
+    }
+    await client.query("COMMIT");
+    if (placements.some((p: any) => p.subject_type === "Minor")) {
+      await autoAssignMinorProfessors(String(code));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to save curriculum placements" });
+  } finally {
+    client.release();
   }
 });
 
@@ -984,32 +1302,6 @@ app.put("/sections/:id", async (req: Request, res: Response) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: "Failed to update section" });
-  }
-});
-app.put("/curriculum/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const { year_level, program_id, course_code } = req.body;
-  if (!YEAR_LEVELS.includes(year_level)) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Invalid year level" });
-  }
-  try {
-    const result = await pool.query(
-      "UPDATE curriculum SET year_level = $1, program_id = $2, course_code = $3 WHERE curriculum_id = $4 RETURNING *",
-      [year_level, program_id, course_code, id],
-    );
-    if (result.rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Curriculum entry not found" });
-    }
-    res.json(result.rows[0]);
-  } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to update curriculum entry" });
   }
 });
 
@@ -1113,22 +1405,23 @@ app.delete("/rooms/:id", async (req: Request, res: Response) => {
   }
 });
 
-app.delete("/programs/:id", async (req: Request, res: Response) => {
-  const { id } = req.params;
+app.delete("/programs/:id", async (req, res) => {
   try {
-    const result = await pool.query(
-      "DELETE FROM program WHERE program_id = $1 RETURNING *",
-      [id],
-    );
-    if (result.rows.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Program not found" });
+    await pool.query("DELETE FROM curriculum WHERE program_id = $1", [
+      req.params.id,
+    ]);
+    await pool.query("DELETE FROM program WHERE program_id = $1", [
+      req.params.id,
+    ]);
+    res.json({ success: true });
+  } catch (err: any) {
+    if (err.code === "23503" || err.code === "23001") {
+      return res.status(409).json({
+        error:
+          "Can't delete: this program is used by sections. Delete its sections first.",
+      });
     }
-    res.json({ success: true, deleted: result.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, error: "Failed to delete program" });
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1166,11 +1459,14 @@ app.delete("/employees/:id", async (req: Request, res: Response) => {
         .json({ success: false, error: "Employee not found" });
     }
     res.json({ success: true, deleted: result.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res
-      .status(500)
-      .json({ success: false, error: "Failed to delete employee" });
+  } catch (err: any) {
+    if (err.code === "23503" || err.code === "23001" || err.code === "23P01") {
+      return res.status(409).json({
+        error:
+          "Can't delete: this professor is scheduled in classes or assigned to courses.",
+      });
+    }
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -1180,6 +1476,9 @@ app.delete("/courses/:code", async (req: Request, res: Response) => {
   try {
     await client.query("BEGIN");
     await client.query("DELETE FROM curriculum WHERE course_code = $1", [code]);
+    await client.query("DELETE FROM course_employee WHERE course_code = $1", [
+      code,
+    ]);
     const result = await client.query(
       "DELETE FROM course WHERE course_code = $1 RETURNING *",
       [code],
@@ -1207,6 +1506,7 @@ app.delete("/courses/:code", async (req: Request, res: Response) => {
     client.release();
   }
 });
+
 app.delete("/sections/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   const client = await pool.connect();
@@ -1254,6 +1554,7 @@ app.delete("/curriculum/:id", async (req: Request, res: Response) => {
       .json({ success: false, error: "Failed to delete curriculum entry" });
   }
 });
+
 app.delete("/schedules/:id", async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
@@ -1313,8 +1614,22 @@ app.delete("/classes/:id", async (req: Request, res: Response) => {
   }
 });
 
+app.get("/generate-schedule/status", (req: Request, res: Response) => {
+  res.json({ running: generateInProgress, result: lastGenerateResult });
+});
+
 app.post("/generate-schedule", async (req: Request, res: Response) => {
-  const client = await pool.connect();
+  if (generateInProgress) {
+    return res.status(409).json({
+      success: false,
+      error:
+        "A schedule generation is already running. Please wait for it to finish.",
+    });
+  }
+  generateInProgress = true;
+  lastGenerateResult = null;
+
+  let client: PoolClient | undefined;
 
   try {
     const activeScheduleResult = await pool.query(
@@ -1322,7 +1637,6 @@ app.post("/generate-schedule", async (req: Request, res: Response) => {
     );
 
     if (activeScheduleResult.rows.length === 0) {
-      client.release();
       return res.status(400).json({
         success: false,
         error: "No active schedule found. Create an active schedule first.",
@@ -1335,7 +1649,6 @@ app.post("/generate-schedule", async (req: Request, res: Response) => {
     const requirements = buildRequirements(input);
 
     if (requirements.length === 0) {
-      client.release();
       return res.status(400).json({
         success: false,
         error:
@@ -1343,8 +1656,15 @@ app.post("/generate-schedule", async (req: Request, res: Response) => {
       });
     }
 
+    const gaStart = Date.now();
     const gaResult = await runGAInWorker(input, 50, 200);
+    console.log(
+      `GA took ${((Date.now() - gaStart) / 1000).toFixed(1)}s, ${gaResult.generationsRun} generations`,
+    );
+    console.log("Final fitness:", gaResult.best.fitness);
 
+    // Connect only now, after the long GA run, so no connection sits idle.
+    client = await pool.connect();
     await client.query("BEGIN");
 
     await client.query("DELETE FROM class WHERE schedule_id = $1", [
@@ -1371,25 +1691,58 @@ app.post("/generate-schedule", async (req: Request, res: Response) => {
     }
 
     await client.query("COMMIT");
-    client.release();
 
-    res.json({
+    const responsePayload = {
       success: true,
       fitness: gaResult.best.fitness,
       isConflictFree: gaResult.best.fitness === 0,
       generationsRun: gaResult.generationsRun,
       classesCreated: insertedClasses.length,
       classes: insertedClasses,
-    });
+    };
+    lastGenerateResult = responsePayload;
+    res.json(responsePayload);
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    client.release();
+    if (client) await client.query("ROLLBACK").catch(() => {});
     console.error(err);
     const message =
       err instanceof Error ? err.message : "Failed to generate schedule";
+    lastGenerateResult = { success: false, error: message };
     res.status(500).json({ success: false, error: message });
+  } finally {
+    client?.release();
+    generateInProgress = false;
   }
 });
+app.get("/course-employees", async (_req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      "SELECT course_code, employee_id FROM course_employee",
+    );
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to fetch course professors" });
+  }
+});
+app.get("/summary", async (_req, res) => {
+  try {
+    const r = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM room)::int AS rooms,
+        (SELECT COUNT(*) FROM employee)::int AS employees,
+        (SELECT COUNT(*) FROM course)::int AS courses,
+        (SELECT COUNT(*) FROM section
+           WHERE schedule_id = (SELECT schedule_id FROM schedule WHERE status = 'active' LIMIT 1))::int AS sections
+    `);
+    res.json(r.rows[0]);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });

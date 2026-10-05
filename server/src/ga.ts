@@ -61,7 +61,6 @@ export function buildRequirements(
         continue;
       }
 
-      // New splitting formula: 3→2/1, 4→3/1, 5→3/2, 6→4/2
       let session1Hours: number;
       let session2Hours: number;
 
@@ -115,6 +114,46 @@ function randomFrom<T>(arr: T[]): T {
   return arr[index]!;
 }
 
+// Maps course_code -> the professors assigned to it via course_employee.
+// A course with no rows in course_employee is absent from this map, meaning
+// "no restriction" (any professor is eligible) — this keeps every course
+// that hasn't had professors assigned yet working exactly as before.
+function buildEligibleEmployeesByCourse(
+  input: SchedulingInput,
+): Map<string, EmployeeData[]> {
+  const employeeMap = new Map(input.employees.map((e) => [e.employee_id, e]));
+  const idsByCourse = new Map<string, number[]>();
+  for (const ce of input.course_employees ?? []) {
+    if (!idsByCourse.has(ce.course_code)) idsByCourse.set(ce.course_code, []);
+    idsByCourse.get(ce.course_code)!.push(ce.employee_id);
+  }
+  const result = new Map<string, EmployeeData[]>();
+  for (const [courseCode, ids] of idsByCourse) {
+    const emps = ids
+      .map((id) => employeeMap.get(id))
+      .filter((e): e is EmployeeData => e !== undefined);
+    if (emps.length > 0) result.set(courseCode, emps);
+  }
+  return result;
+}
+
+// Narrows a candidate pool down to the professors assigned to this course.
+// If narrowing leaves nobody (e.g. the assigned profs aren't free/available
+// today), falls back to the full eligible list rather than to any professor,
+// so an assigned course never silently gets an unassigned professor.
+function restrictToEligible(
+  pool: EmployeeData[],
+  courseCode: string,
+  eligibleByCourse: Map<string, EmployeeData[]>,
+): EmployeeData[] {
+  const eligible = eligibleByCourse.get(courseCode);
+  if (!eligible) return pool;
+  const restricted = pool.filter((e) =>
+    eligible.some((el) => el.employee_id === e.employee_id),
+  );
+  return restricted.length > 0 ? restricted : eligible;
+}
+
 function buildEmployeesByDay(
   input: SchedulingInput,
 ): Map<number, EmployeeData[]> {
@@ -153,12 +192,18 @@ function pickEmployeeForDay(
   input: SchedulingInput,
   dayId: number,
   employeesByDay: Map<number, EmployeeData[]>,
+  eligible?: EmployeeData[],
 ): EmployeeData {
   const availableEmployees = employeesByDay.get(dayId) ?? [];
-  if (availableEmployees.length > 0) {
-    return randomFrom(availableEmployees);
+  const base =
+    availableEmployees.length > 0 ? availableEmployees : input.employees;
+  if (!eligible) {
+    return randomFrom(base);
   }
-  return randomFrom(input.employees);
+  const restricted = base.filter((e) =>
+    eligible.some((el) => el.employee_id === e.employee_id),
+  );
+  return randomFrom(restricted.length > 0 ? restricted : eligible);
 }
 
 function buildAvailabilityByEmployeeDay(
@@ -177,8 +222,8 @@ const WORKING_DAY_START_MIN = 7 * 60;
 const WORKING_DAY_END_MIN = 20 * 60;
 const SLOT_GRANULARITY_MIN = 30;
 
-const EMPLOYEE_ATTEMPT_LIMIT = 4;
-const DAY_ATTEMPT_LIMIT = 3;
+const EMPLOYEE_ATTEMPT_LIMIT = 6;
+const DAY_ATTEMPT_LIMIT = 8;
 
 function minutesToTime(totalMinutes: number): string {
   const h = Math.floor(totalMinutes / 60);
@@ -306,24 +351,41 @@ function getConflictFreeStarts(
   return validStarts;
 }
 
-function pickRoomForRequirement(
+type Interval = { start: number; end: number };
+
+function isFree(
+  intervals: Interval[] | undefined,
+  start: number,
+  end: number,
+): boolean {
+  return !(intervals ?? []).some((b) =>
+    timeRangesOverlap(start, end, b.start, b.end),
+  );
+}
+
+function addInterval(
+  map: Map<string, Interval[]>,
+  key: string,
+  interval: Interval,
+) {
+  if (!map.has(key)) map.set(key, []);
+  map.get(key)!.push(interval);
+}
+
+function roomPoolForRequirement(
   req: SchedulingRequirement,
   courseType: string,
   input: SchedulingInput,
-): { room_id: number } {
+): SchedulingInput["rooms"] {
   const labRooms = input.rooms.filter(
     (r) => r.type?.toLowerCase() === "laboratory",
   );
   const matchingTypeRooms = input.rooms.filter(
     (r) => r.type?.toLowerCase() === courseType,
   );
-  const room =
-    req.prefers_lab_room && labRooms.length > 0
-      ? randomFrom(labRooms)
-      : matchingTypeRooms.length > 0
-        ? randomFrom(matchingTypeRooms)
-        : randomFrom(input.rooms);
-  return room;
+  if (req.prefers_lab_room && labRooms.length > 0) return labRooms;
+  if (matchingTypeRooms.length > 0) return matchingTypeRooms;
+  return input.rooms;
 }
 
 export function generateRandomCandidate(
@@ -333,20 +395,25 @@ export function generateRandomCandidate(
   const courseMap = new Map(input.courses.map((c) => [c.course_code, c]));
   const employeesByDay = buildEmployeesByDay(input);
   const availabilityByEmployeeDay = buildAvailabilityByEmployeeDay(input);
+  const eligibleByCourse = buildEligibleEmployeesByCourse(input);
 
-  const bookedIntervalsByEmployeeDay = new Map<
-    string,
-    { start: number; end: number }[]
-  >();
+  const bookedIntervalsByEmployeeDay = new Map<string, Interval[]>();
+  const bookedIntervalsBySectionDay = new Map<string, Interval[]>();
+  const bookedIntervalsByRoomDay = new Map<string, Interval[]>();
   const hoursByEmployeeDay = new Map<string, number>();
   const hoursByEmployeeWeek = new Map<number, number>();
 
   const assignments: ClassAssignment[] = [];
 
-  for (const req of requirements) {
+  const ordered = [...requirements].sort(
+    (a, b) =>
+      b.session_duration_hours - a.session_duration_hours ||
+      Number(!!b.prefers_lab_room) - Number(!!a.prefers_lab_room),
+  );
+  for (const req of ordered) {
     const course = courseMap.get(req.course_code);
     const courseType = (course?.course_type_description ?? "").toLowerCase();
-    const room = pickRoomForRequirement(req, courseType, input);
+    const roomPool = roomPoolForRequirement(req, courseType, input);
 
     const durationHours =
       req.session_duration_hours ?? course?.total_hours ?? 1.5;
@@ -363,8 +430,16 @@ export function generateRandomCandidate(
     ) {
       const day = pickDayWithAvailableEmployees(input, employeesByDay);
       const candidatesForDay = employeesByDay.get(day.day_id) ?? [];
-      const pool =
+      const basePool =
         candidatesForDay.length > 0 ? candidatesForDay : input.employees;
+      const pool = restrictToEligible(
+        basePool,
+        req.course_code,
+        eligibleByCourse,
+      );
+      const sectionBooked =
+        bookedIntervalsBySectionDay.get(`${req.section_id}-${day.day_id}`) ??
+        [];
 
       for (let eAttempt = 0; eAttempt < EMPLOYEE_ATTEMPT_LIMIT; eAttempt++) {
         const employee = randomFrom(pool);
@@ -377,10 +452,18 @@ export function generateRandomCandidate(
         const validStarts = getConflictFreeStarts(
           employee,
           windows,
-          booked,
+          [...booked, ...sectionBooked],
           durationMin,
           dayHours,
           weekHours,
+        ).filter((start) =>
+          roomPool.some((r) =>
+            isFree(
+              bookedIntervalsByRoomDay.get(`${r.room_id}-${day.day_id}`),
+              start,
+              start + durationMin,
+            ),
+          ),
         );
 
         if (validStarts.length > 0) {
@@ -398,6 +481,7 @@ export function generateRandomCandidate(
         input,
         chosenDay.day_id,
         employeesByDay,
+        eligibleByCourse.get(req.course_code),
       );
       const slot = pickTimeSlotForEmployeeDay(
         chosenEmployee.employee_id,
@@ -408,33 +492,46 @@ export function generateRandomCandidate(
       chosenStart = timeToMinutes(slot.start_time);
     }
 
-    const chosenEnd = chosenStart + durationMin;
+    const dayId = chosenDay.day_id;
+    const employeeId = chosenEmployee.employee_id;
+    const startMin = chosenStart;
+    const endMin = startMin + durationMin;
 
-    const key = `${chosenEmployee.employee_id}-${chosenDay.day_id}`;
-    if (!bookedIntervalsByEmployeeDay.has(key)) {
-      bookedIntervalsByEmployeeDay.set(key, []);
-    }
-    bookedIntervalsByEmployeeDay
-      .get(key)!
-      .push({ start: chosenStart, end: chosenEnd });
+    const freeRooms = roomPool.filter((r) =>
+      isFree(
+        bookedIntervalsByRoomDay.get(`${r.room_id}-${dayId}`),
+        startMin,
+        endMin,
+      ),
+    );
+    const room = randomFrom(freeRooms.length > 0 ? freeRooms : roomPool);
+
+    const interval = { start: startMin, end: endMin };
+    const empKey = `${employeeId}-${dayId}`;
+    addInterval(bookedIntervalsByEmployeeDay, empKey, interval);
+    addInterval(
+      bookedIntervalsBySectionDay,
+      `${req.section_id}-${dayId}`,
+      interval,
+    );
+    addInterval(bookedIntervalsByRoomDay, `${room.room_id}-${dayId}`, interval);
     hoursByEmployeeDay.set(
-      key,
-      (hoursByEmployeeDay.get(key) ?? 0) + durationMin / 60,
+      empKey,
+      (hoursByEmployeeDay.get(empKey) ?? 0) + durationMin / 60,
     );
     hoursByEmployeeWeek.set(
-      chosenEmployee.employee_id,
-      (hoursByEmployeeWeek.get(chosenEmployee.employee_id) ?? 0) +
-        durationMin / 60,
+      employeeId,
+      (hoursByEmployeeWeek.get(employeeId) ?? 0) + durationMin / 60,
     );
 
     assignments.push({
       course_code: req.course_code,
       section_id: req.section_id,
-      employee_id: chosenEmployee.employee_id,
+      employee_id: employeeId,
       room_id: room.room_id,
-      day_id: chosenDay.day_id,
-      start_time: minutesToTime(chosenStart),
-      end_time: minutesToTime(chosenEnd),
+      day_id: dayId,
+      start_time: minutesToTime(startMin),
+      end_time: minutesToTime(endMin),
       session_number: req.session_number,
       session_duration_hours: req.session_duration_hours,
     });
@@ -503,6 +600,7 @@ export function mutate(
   const employeeMap = new Map(input.employees.map((e) => [e.employee_id, e]));
   const employeesByDay = buildEmployeesByDay(input);
   const availabilityByEmployeeDay = buildAvailabilityByEmployeeDay(input);
+  const eligibleByCourse = buildEligibleEmployeesByCourse(input);
 
   const original = candidate.assignments;
 
@@ -510,12 +608,8 @@ export function mutate(
     employeeId: number,
     dayId: number,
     excludeIndex: number,
-  ): {
-    intervals: { start: number; end: number }[];
-    dayHours: number;
-    weekHours: number;
-  } {
-    const intervals: { start: number; end: number }[] = [];
+  ): { intervals: Interval[]; dayHours: number; weekHours: number } {
+    const intervals: Interval[] = [];
     let dayHours = 0;
     let weekHours = 0;
     original.forEach((a, idx) => {
@@ -535,11 +629,32 @@ export function mutate(
     return { intervals, dayHours, weekHours };
   }
 
+  // Time already used on a day by classes matching (same section, same room)
+  function getOtherIntervals(
+    dayId: number,
+    excludeIndex: number,
+    match: (a: ClassAssignment) => boolean,
+  ): Interval[] {
+    const out: Interval[] = [];
+    original.forEach((a, idx) => {
+      if (idx === excludeIndex || a.day_id !== dayId || !match(a)) return;
+      out.push({
+        start: timeToMinutes(a.start_time),
+        end: timeToMinutes(a.end_time),
+      });
+    });
+    return out;
+  }
+
   const mutatedAssignments: ClassAssignment[] = original.map(
     (assignment, index) => {
       if (Math.random() > MUTATION_RATE) {
         return assignment;
       }
+
+      const sameSection = (a: ClassAssignment) =>
+        a.section_id === assignment.section_id;
+      const sameRoom = (a: ClassAssignment) => a.room_id === assignment.room_id;
 
       const mutationChoice = Math.floor(Math.random() * 4);
       switch (mutationChoice) {
@@ -563,14 +678,34 @@ export function mutate(
           const matchingTypeRooms = input.rooms.filter(
             (r) => r.type?.toLowerCase() === courseType,
           );
-          const newRoom =
+          const roomPool =
             prefersLabRoom && homeLabRooms.length > 0
-              ? randomFrom(homeLabRooms)
+              ? homeLabRooms
               : prefersLabRoom && labRooms.length > 0
-                ? randomFrom(labRooms)
+                ? labRooms
                 : matchingTypeRooms.length > 0
-                  ? randomFrom(matchingTypeRooms)
-                  : randomFrom(input.rooms);
+                  ? matchingTypeRooms
+                  : input.rooms;
+
+          const s = timeToMinutes(assignment.start_time);
+          const e = timeToMinutes(assignment.end_time);
+          const freeRooms = roomPool.filter(
+            (r) =>
+              !original.some(
+                (a, idx) =>
+                  idx !== index &&
+                  a.room_id === r.room_id &&
+                  a.day_id === assignment.day_id &&
+                  timeRangesOverlap(
+                    s,
+                    e,
+                    timeToMinutes(a.start_time),
+                    timeToMinutes(a.end_time),
+                  ),
+              ),
+          );
+          if (freeRooms.length === 0) return assignment;
+          const newRoom = randomFrom(freeRooms);
           return { ...assignment, room_id: newRoom.room_id };
         }
         case 1: {
@@ -579,8 +714,23 @@ export function mutate(
             assignment.session_duration_hours ?? course?.total_hours ?? 1.5;
           const durationMin = Math.round(durationHours * 60);
           const candidatesForDay = employeesByDay.get(assignment.day_id) ?? [];
-          const pool =
+          const basePool =
             candidatesForDay.length > 0 ? candidatesForDay : input.employees;
+          const pool = restrictToEligible(
+            basePool,
+            assignment.course_code,
+            eligibleByCourse,
+          );
+          const sectionIntervals = getOtherIntervals(
+            assignment.day_id,
+            index,
+            sameSection,
+          );
+          const roomIntervals = getOtherIntervals(
+            assignment.day_id,
+            index,
+            sameRoom,
+          );
 
           let newEmployee: EmployeeData | null = null;
           let newStart: number | null = null;
@@ -596,7 +746,7 @@ export function mutate(
             const validStarts = getConflictFreeStarts(
               candidateEmployee,
               windows,
-              intervals,
+              [...intervals, ...sectionIntervals, ...roomIntervals],
               durationMin,
               dayHours,
               weekHours,
@@ -608,21 +758,7 @@ export function mutate(
             }
           }
 
-          if (newEmployee === null || newStart === null) {
-            newEmployee = pickEmployeeForDay(
-              input,
-              assignment.day_id,
-              employeesByDay,
-            );
-            const slot = pickTimeSlotForEmployeeDay(
-              newEmployee.employee_id,
-              assignment.day_id,
-              durationHours,
-              availabilityByEmployeeDay,
-            );
-            newStart = timeToMinutes(slot.start_time);
-          }
-
+          if (newEmployee === null || newStart === null) return assignment;
           const newEnd = newStart + durationMin;
           return {
             ...assignment,
@@ -648,8 +784,23 @@ export function mutate(
           ) {
             const day = pickDayWithAvailableEmployees(input, employeesByDay);
             const candidatesForDay = employeesByDay.get(day.day_id) ?? [];
-            const pool =
+            const basePool =
               candidatesForDay.length > 0 ? candidatesForDay : input.employees;
+            const pool = restrictToEligible(
+              basePool,
+              assignment.course_code,
+              eligibleByCourse,
+            );
+            const sectionIntervals = getOtherIntervals(
+              day.day_id,
+              index,
+              sameSection,
+            );
+            const roomIntervals = getOtherIntervals(
+              day.day_id,
+              index,
+              sameRoom,
+            );
 
             for (
               let eAttempt = 0;
@@ -667,7 +818,7 @@ export function mutate(
               const validStarts = getConflictFreeStarts(
                 candidateEmployee,
                 windows,
-                intervals,
+                [...intervals, ...sectionIntervals, ...roomIntervals],
                 durationMin,
                 dayHours,
                 weekHours,
@@ -681,22 +832,8 @@ export function mutate(
             }
           }
 
-          if (newDay === null || newEmployee === null || newStart === null) {
-            newDay = pickDayWithAvailableEmployees(input, employeesByDay);
-            newEmployee = pickEmployeeForDay(
-              input,
-              newDay.day_id,
-              employeesByDay,
-            );
-            const slot = pickTimeSlotForEmployeeDay(
-              newEmployee.employee_id,
-              newDay.day_id,
-              durationHours,
-              availabilityByEmployeeDay,
-            );
-            newStart = timeToMinutes(slot.start_time);
-          }
-
+          if (newDay === null || newEmployee === null || newStart === null)
+            return assignment;
           const newEnd = newStart + durationMin;
           return {
             ...assignment,
@@ -718,30 +855,30 @@ export function mutate(
             assignment.day_id,
             index,
           );
+          const sectionIntervals = getOtherIntervals(
+            assignment.day_id,
+            index,
+            sameSection,
+          );
+          const roomIntervals = getOtherIntervals(
+            assignment.day_id,
+            index,
+            sameRoom,
+          );
           const employee = employeeMap.get(assignment.employee_id);
 
-          let newStart: number;
           const validStarts = employee
             ? getConflictFreeStarts(
                 employee,
                 windows,
-                intervals,
+                [...intervals, ...sectionIntervals, ...roomIntervals],
                 durationMin,
                 dayHours,
                 weekHours,
               )
             : [];
-          if (validStarts.length > 0) {
-            newStart = randomFrom(validStarts);
-          } else {
-            const slot = pickTimeSlotForEmployeeDay(
-              assignment.employee_id,
-              assignment.day_id,
-              durationHours,
-              availabilityByEmployeeDay,
-            );
-            newStart = timeToMinutes(slot.start_time);
-          }
+          if (validStarts.length === 0) return assignment;
+          const newStart = randomFrom(validStarts);
 
           const newEnd = newStart + durationMin;
           return {
@@ -758,7 +895,6 @@ export function mutate(
   scoreCandidate(mutated, input);
   return mutated;
 }
-
 export interface GAResult {
   best: Candidate;
   generationsRun: number;
@@ -782,6 +918,8 @@ export function runGA(
   const fitnessHistory: number[] = [];
 
   let generationsRun = 0;
+  let bestSoFar = Infinity;
+  let stale = 0;
 
   for (let gen = 0; gen < maxGenerations; gen++) {
     generationsRun = gen + 1;
@@ -791,17 +929,27 @@ export function runGA(
     );
     fitnessHistory.push(currentBest.fitness);
 
-    if (currentBest.fitness === 0) {
+    if (currentBest.fitness < bestSoFar) {
+      bestSoFar = currentBest.fitness;
+      stale = 0;
+    } else {
+      stale++;
+    }
+    if (
+      currentBest.fitness === 0 ||
+      (stale >= 40 &&
+        !hasHardViolations(scoreCandidate(currentBest, input).violations))
+    ) {
       break;
     }
 
     const nextPopulation: Candidate[] = [currentBest];
-
     while (nextPopulation.length < populationSize) {
-      const parentA = tournamentSelect(population);
-      const parentB = tournamentSelect(population);
-      const child = crossover(parentA, parentB, input);
-      const mutatedChild = mutate(child, input);
+      const parent = tournamentSelect(population);
+      const mutatedChild = mutate(
+        { assignments: parent.assignments, fitness: 0 },
+        input,
+      );
       nextPopulation.push(mutatedChild);
     }
 
@@ -824,6 +972,10 @@ export function runGA(
       "EMPLOYEE_MAX_HOURS_EXCEEDED",
     ].includes(v.type),
   ).length;
+  console.log(
+    "fitness every 20 gens:",
+    fitnessHistory.filter((_, i) => i % 20 === 0),
+  );
 
   return {
     best: finalBest,

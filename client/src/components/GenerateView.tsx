@@ -47,32 +47,14 @@ export function GenerateView() {
   const fetchCounts = async () => {
     setCountsLoading(true);
     try {
-      const [roomsRes, employeesRes, coursesRes, sectionsRes] =
-        await Promise.all([
-          fetch("/api/rooms"),
-          fetch("/api/employees"),
-          fetch("/api/courses"),
-          fetch("/api/sections"),
-        ]);
-      const [rooms, employees, courses, sections] = await Promise.all([
-        roomsRes.json(),
-        employeesRes.json(),
-        coursesRes.json(),
-        sectionsRes.json(),
-      ]);
-      setCounts({
-        rooms: rooms.length,
-        employees: employees.length,
-        courses: courses.length,
-        sections: sections.length,
-      });
+      const res = await fetch("/api/summary");
+      setCounts(await res.json());
     } catch (err) {
       console.error("Failed to fetch summary counts", err);
     } finally {
       setCountsLoading(false);
     }
   };
-
   useEffect(() => {
     fetchCounts();
   }, []);
@@ -81,19 +63,33 @@ export function GenerateView() {
     setGenerating(true);
     setError(null);
     setResult(null);
+    await tryGenerate();
+  };
+
+  const tryGenerate = async (): Promise<void> => {
     try {
       const res = await fetch("/api/generate-schedule", { method: "POST" });
       const data: GenerateResult = await res.json();
+
+      if (res.status === 409) {
+        setError("Waiting for the current generation to finish…");
+        await new Promise((r) => setTimeout(r, 3000));
+        return tryGenerate();
+      }
+
       if (!res.ok || !data.success) {
+        setGenerating(false);
         setError(data.error ?? "Failed to generate schedule");
         return;
       }
+
+      setGenerating(false);
+      setError(null);
       setResult(data);
     } catch (err) {
       console.error("Failed to generate schedule", err);
-      setError("Failed to reach the server. Is the backend running?");
-    } finally {
       setGenerating(false);
+      setError("Failed to reach the server. Is the backend running?");
     }
   };
 

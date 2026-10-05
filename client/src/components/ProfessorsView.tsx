@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { motion, AnimatePresence } from "framer-motion";
 import { ImportExcelButton } from "@/components/ImportExcelButton";
 import { ConfirmDeleteDialog } from "@/components/ConfirmDeleteDialog";
+import { toast } from "sonner";
 
 interface Employee {
   employee_id: number;
@@ -14,7 +15,6 @@ interface Employee {
   mname: string | null;
   fname: string;
   name: string;
-  useStates;
   position: string | null;
   max_hours_per_day: number | null;
   max_hours_per_week: number | null;
@@ -284,7 +284,12 @@ function ProfessorForm({
               ))}
             </select>
           </div>
-          <Button variant="secondary" size="sm" onClick={addSlot}>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-[40px] hover:bg-yellow-400"
+            onClick={addSlot}
+          >
             Add Slot
           </Button>
           {slotError && (
@@ -310,7 +315,7 @@ function ProfessorForm({
         <Button size="sm" onClick={handleSave}>
           <Check className="w-4 h-4 mr-1" /> Save
         </Button>
-        <Button size="sm" variant="ghost" onClick={onCancel}>
+        <Button size="sm" variant="outline" onClick={onCancel}>
           <X className="w-4 h-4 mr-1" /> Cancel
         </Button>
       </div>
@@ -327,6 +332,8 @@ export function ProfessorsView() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<Employee | null>(null);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const emptyForm: ProfessorFormValues = {
     fname: "",
     mname: "",
@@ -406,12 +413,17 @@ export function ProfessorsView() {
               : Number(values.maxHoursPerWeek),
         }),
       });
-      const newEmployee = await res.json();
-      await saveAvailabilityForEmployee(newEmployee.employee_id, values.slots);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error ?? "Could not add the professor.");
+        return;
+      }
+      await saveAvailabilityForEmployee(data.employee_id, values.slots);
       setShowForm(false);
       fetchAll();
     } catch (err) {
       console.error("Failed to create professor", err);
+      toast.error("Could not add the professor.");
     }
   };
 
@@ -424,7 +436,7 @@ export function ProfessorsView() {
     if (!editingId || !values.fname || !values.lname || !values.department)
       return;
     try {
-      await fetch(`/api/employees/${editingId}`, {
+      const res = await fetch(`/api/employees/${editingId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -441,11 +453,17 @@ export function ProfessorsView() {
               : Number(values.maxHoursPerWeek),
         }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error ?? "Could not update the professor.");
+        return;
+      }
       await saveAvailabilityForEmployee(editingId, values.slots);
       setEditingId(null);
       fetchAll();
     } catch (err) {
       console.error("Failed to update professor", err);
+      toast.error("Could not update the professor.");
     }
   };
 
@@ -455,11 +473,56 @@ export function ProfessorsView() {
 
   const removeProfessor = async (id: number) => {
     try {
-      await fetch(`/api/employees/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/employees/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        toast.error(data.error || "Failed to delete professor");
+        return;
+      }
+      setSelected((s) => s.filter((x) => x !== id));
       fetchAll();
     } catch (err) {
       console.error("Failed to delete professor", err);
+      toast.error("Failed to delete professor");
     }
+  };
+
+  const toggleSelect = (id: number) =>
+    setSelected((s) =>
+      s.includes(id) ? s.filter((x) => x !== id) : [...s, id],
+    );
+
+  const removeSelected = async () => {
+    const ids = [...selected];
+    const failed: number[] = [];
+    let firstError = "";
+    for (const id of ids) {
+      try {
+        const res = await fetch(`/api/employees/${id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          failed.push(id);
+          if (!firstError) firstError = data.error ?? "";
+        }
+      } catch {
+        failed.push(id);
+      }
+    }
+    const deleted = ids.length - failed.length;
+    if (deleted > 0) {
+      toast.success(`Deleted ${deleted} professor${deleted !== 1 ? "s" : ""}`);
+    }
+    if (failed.length > 0) {
+      const names = employees
+        .filter((e) => failed.includes(e.employee_id))
+        .map((e) => e.name)
+        .join(", ");
+      toast.error(
+        `Could not delete ${names}${firstError ? `: ${firstError}` : ""}`,
+      );
+    }
+    setSelected(failed);
+    fetchAll();
   };
 
   const slotsForEmployee = (employeeId: number): SlotDraft[] =>
@@ -486,38 +549,70 @@ export function ProfessorsView() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="font-heading text-2xl font-bold">Professors</h2>
-          <p className="text-muted-foreground mt-1">
-            Manage faculty and availability
-          </p>
+      <div className="sticky top-0 z-50 bg-background pt-4 pb-4 -mx-6 px-6 shadow-none border-none">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="font-heading text-2xl font-bold">Professors</h2>
+            <p className="text-muted-foreground mt-1">
+              Manage faculty and availability
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <div className="inline-block [&_button]:!bg-white [&_button]:!text-gray-800 [&_button]:border [&_button]:border-gray-300 hover:[&_button]:!bg-gray-100">
+              <ImportExcelButton
+                endpoint="/api/employees/import"
+                onDone={fetchAll}
+              />
+            </div>
+            <Button
+              onClick={() => {
+                setShowForm(!showForm);
+                setEditingId(null);
+              }}
+            >
+              <Plus className="w-4 h-4 mr-1" /> Add Professor
+            </Button>
+          </div>
         </div>
-        <div className="flex gap-2">
-          <ImportExcelButton
-            endpoint="/api/employees/import"
-            onDone={fetchAll}
-          />
-          <Button
-            onClick={() => {
-              setShowForm(!showForm);
-              setEditingId(null);
-            }}
-          >
-            <Plus className="w-4 h-4 mr-1" /> Add Professor
-          </Button>
+        <div className="glass-card rounded-xl p-4">
+          <div className="relative">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search name, department, or position…"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setEditingId(null);
+              }}
+              className="pl-9"
+            />
+          </div>
         </div>
-      </div>
-      <div className="glass-card rounded-xl p-4">
-        <div className="relative">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            placeholder="Search name, department, or position…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="pl-9"
-          />
-        </div>
+
+        {selected.length > 0 && (
+          <div className="glass-card rounded-xl mt-3 px-4 py-2 flex items-center justify-between text-sm">
+            <span className="font-medium">{selected.length} selected</span>
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelected(sorted.map((p) => p.employee_id))}
+              >
+                Select all ({sorted.length})
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+                Clear
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setBulkDeleteOpen(true)}
+              >
+                <Trash2 className="w-4 h-4 mr-1" /> Delete selected
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
 
       <AnimatePresence>
@@ -573,21 +668,31 @@ export function ProfessorsView() {
               );
             }
 
-            const stagger = Math.min(index, 8) * 0.05;
+            const stagger = search ? 0 : Math.min(index, 8) * 0.05;
+            const isSelected = selected.includes(p.employee_id);
             return (
               <motion.div
                 key={p.employee_id}
-                layout
-                initial={{ opacity: 0, y: 16 }}
+                layout={!search}
+                initial={search ? false : { opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95 }}
                 transition={{
-                  opacity: { duration: 0.3, delay: stagger },
-                  y: { duration: 0.3, delay: stagger },
+                  opacity: { duration: 0.2, delay: stagger },
+                  y: { duration: 0.2, delay: stagger },
                 }}
-                className="glass-card rounded-xl p-4 flex items-start justify-between"
+                className={`glass-card rounded-xl p-4 flex items-start justify-between gap-3 ${
+                  isSelected ? "ring-2 ring-primary/40" : ""
+                }`}
               >
-                <div>
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleSelect(p.employee_id)}
+                  aria-label={`Select ${p.name}`}
+                  className="self-center h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                />
+                <div className="min-w-0 flex-1">
                   <p className="font-medium">{p.name}</p>
                   <p className="text-sm text-muted-foreground mt-1">
                     {p.department}
@@ -636,15 +741,32 @@ export function ProfessorsView() {
             );
           })}
         </AnimatePresence>
+        {!loading && sorted.length === 0 && (
+          <div className="glass-card rounded-xl p-10 text-center text-sm text-muted-foreground">
+            {search
+              ? "No professors match your search."
+              : "No professors yet. Click Add Professor to create one."}
+          </div>
+        )}
         <ConfirmDeleteDialog
           open={deleteTarget !== null}
           title="Delete this professor?"
-          description={`Are you sure you want to delete ${deleteTarget?.name}`}
+          description={`Are you sure you want to delete ${deleteTarget?.name}?`}
           onConfirm={() => {
             if (deleteTarget) removeProfessor(deleteTarget.employee_id);
             setDeleteTarget(null);
           }}
           onCancel={() => setDeleteTarget(null)}
+        />
+        <ConfirmDeleteDialog
+          open={bulkDeleteOpen}
+          title={`Delete ${selected.length} selected professor${selected.length !== 1 ? "s" : ""}?`}
+          description="Professors who are scheduled in classes or assigned to courses can't be deleted and will stay selected."
+          onConfirm={() => {
+            setBulkDeleteOpen(false);
+            removeSelected();
+          }}
+          onCancel={() => setBulkDeleteOpen(false)}
         />
       </div>
     </div>
