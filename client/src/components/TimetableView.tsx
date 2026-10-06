@@ -7,6 +7,7 @@ import {
   Layers,
   GraduationCap,
   FileDown,
+  FileSpreadsheet,
   X,
 } from "lucide-react";
 import jsPDF from "jspdf";
@@ -14,6 +15,8 @@ import autoTable from "jspdf-autotable";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import { motion } from "framer-motion";
+
+import * as XLSX from "xlsx";
 
 interface ClassRow {
   class_id: number;
@@ -657,6 +660,41 @@ export function TimetableView() {
     ? selectedEntryRoomType.toLowerCase().includes("lab")
     : false;
 
+  const handleExportSheet = (format: "xlsx" | "csv") => {
+    const sorted = [...filteredClasses].sort((a, b) => {
+      const di = DAYS.indexOf(a.day) - DAYS.indexOf(b.day);
+      return di !== 0
+        ? di
+        : timeToHourFloat(a.start_time) - timeToHourFloat(b.start_time);
+    });
+    const data = [
+      [
+        "Day",
+        "Start Time",
+        "End Time",
+        "Course",
+        "Professor",
+        "Room",
+        "Section",
+      ],
+      ...sorted.map((c) => [
+        c.day,
+        formatTime12hr(c.start_time),
+        formatTime12hr(c.end_time),
+        `${c.course_code} ${c.course}`,
+        c.professor,
+        c.room,
+        `${c.program} · ${c.year_level} · Sec ${c.section_id}`,
+      ]),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    ws["!cols"] = [10, 12, 12, 40, 25, 10, 35].map((wch) => ({ wch }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Timetable");
+    XLSX.writeFile(wb, `sti-sync-timetable-${Date.now()}.${format}`);
+    toast.success(`Timetable exported (${format.toUpperCase()})`);
+  };
+
   const handleExportPdf = () => {
     const doc = new jsPDF({
       orientation: "landscape",
@@ -741,15 +779,35 @@ export function TimetableView() {
             {filteredClasses.length} of {classes.length} classes shown
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="text-xs gap-1.5"
-          onClick={handleExportPdf}
-        >
-          <FileDown className="w-3.5 h-3.5" />
-          Export PDF
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs gap-1.5"
+            onClick={handleExportPdf}
+          >
+            <FileDown className="w-3.5 h-3.5" />
+            Export PDF
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs gap-1.5"
+            onClick={() => handleExportSheet("xlsx")}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Export Excel
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-xs gap-1.5"
+            onClick={() => handleExportSheet("csv")}
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            Export CSV
+          </Button>
+        </div>
       </motion.div>
 
       <motion.div
